@@ -1,22 +1,33 @@
-﻿import re
+import re
 import logging
+from typing import Dict, List, Tuple, Optional, Any
 from ReplaceChar import SPECIAL_CHARS
+from typing import List
 import time
 import os
+import cProfile
+import pstats
+import io
 
 class TrieNode:
     __slots__ = ['children', 'is_end_of_word', 'value']
     def __init__(self):
-        self.children = {}
-        self.is_end_of_word = False
-        self.value = None
+        self.children: Dict[str, 'TrieNode'] = {}
+        self.is_end_of_word: bool = False
+        self.value: Optional[str] = None
 
 class Trie:
     def __init__(self):
-        self.root = TrieNode()
-        self.word_count = 0
+        self.root: TrieNode = TrieNode()
+        self.word_count: int = 0
 
-    def insert(self, word, value):
+    def insert(self, word: str, value: str) -> None:
+        """
+        Insert a word and its associated value into the Trie.
+
+        :param word: The word to insert
+        :param value: The value associated with the word
+        """
         current = self.root
         for char in word:
             if char not in current.children:
@@ -26,14 +37,30 @@ class Trie:
         current.value = value
         self.word_count += 1
 
-    def batch_insert(self, words):
+    def batch_insert(self, words: List[Tuple[str, str]]) -> None:
+        """
+        Insert multiple words and their associated values into the Trie.
+
+        :param words: A list of tuples, each containing a word and its associated value
+        """
         for word, value in words:
             self.insert(word, value)
 
-    def count(self):
+    def count(self) -> int:
+        """
+        Return the number of words in the Trie.
+
+        :return: The number of words
+        """
         return self.word_count
 
-    def find_longest_prefix(self, text):
+    def find_longest_prefix(self, text: str) -> Tuple[str, Optional[str]]:
+        """
+        Find the longest prefix of the given text that exists in the Trie.
+
+        :param text: The text to search for a prefix
+        :return: A tuple containing the longest prefix and its associated value (if any)
+        """
         current = self.root
         longest_prefix = ""
         longest_value = None
@@ -48,61 +75,72 @@ class Trie:
                 longest_value = current.value
         return longest_prefix, longest_value
 
-def load_data():
+def profile_function(func):
+    def wrapper(*args, **kwargs):
+        pr = cProfile.Profile()
+        pr.enable()
+        result = func(*args, **kwargs)
+        pr.disable()
+        s = io.StringIO()
+        ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
+        ps.print_stats()
+        logging.info(f"Performance profile for {func.__name__}:\n{s.getvalue()}")
+        return result
+    return wrapper
+
+@profile_function
+def load_data() -> Tuple[Trie, Trie, Trie, Dict[str, str], Dict[str, Dict[str, Any]]]:
+    """
+    Load data from various files and return Trie structures and dictionaries.
+
+    :return: A tuple containing Trie structures for names2, names, viet_phrase,
+             a dictionary for chinese_phien_am, and a dictionary with loading information
+    """
     names2 = Trie()
     names = Trie()
     viet_phrase = Trie()
-    chinese_phien_am = {}
+    chinese_phien_am: Dict[str, str] = {}
     
-    loading_info = {
+    loading_info: Dict[str, Dict[str, Any]] = {
         "names2": {"loaded": False, "count": 0, "time": 0},
         "names": {"loaded": False, "count": 0, "time": 0},
         "chinese_words": {"loaded": False, "count": 0, "time": 0},
         "viet_phrase": {"loaded": False, "count": 0, "time": 0}
     }
 
+    def load_file(file_name: str, trie: Trie, info_key: str, is_vietphrase: bool = False):
+        try:
+            start_time = time.time()
+            with open(file_name, 'r', encoding='utf-8') as f:
+                if is_vietphrase:
+                    entries = []
+                    for line in f:
+                        parts = line.strip().split('=')
+                        if len(parts) == 2:
+                            key, value = parts
+                            first_value = value.split('/')[0]
+                            entries.append((key, first_value))
+                else:
+                    entries = [tuple(line.strip().split('=')) for line in f if len(line.strip().split('=')) == 2]
+            trie.batch_insert(entries)
+            loading_info[info_key]["loaded"] = True
+            loading_info[info_key]["count"] = trie.count()
+            loading_info[info_key]["time"] = time.time() - start_time
+            logging.info(f"Loaded {trie.count()} entries from {file_name} in {loading_info[info_key]['time']:.2f} seconds")
+        except FileNotFoundError:
+            logging.warning(f"{file_name} not found. Proceeding without {info_key} data.")
+
     # Load Names2.txt
-    try:
-        start_time = time.time()
-        with open('Names2.txt', 'r', encoding='utf-8') as f:
-            name2_entries = []
-            for line in f:
-                parts = line.strip().split('=')
-                if len(parts) == 2:
-                    name2_entries.append((parts[0], parts[1]))
-            names2.batch_insert(name2_entries)
-        loading_info["names2"]["loaded"] = True
-        loading_info["names2"]["count"] = names2.count()
-        loading_info["names2"]["time"] = time.time() - start_time
-        logging.info(f"Loaded {names2.count()} names from Names2.txt in {loading_info['names2']['time']:.2f} seconds")
-    except FileNotFoundError:
-        logging.warning("Names2.txt not found. Proceeding without Names2 data.")
+    load_file('Names2.txt', names2, "names2")
 
     # Load Names.txt
-    try:
-        start_time = time.time()
-        with open('Names.txt', 'r', encoding='utf-8') as f:
-            name_entries = []
-            for line in f:
-                parts = line.strip().split('=')
-                if len(parts) == 2:
-                    name_entries.append((parts[0], parts[1]))
-        names.batch_insert(name_entries)
-        loading_info["names"]["loaded"] = True
-        loading_info["names"]["count"] = names.count()
-        loading_info["names"]["time"] = time.time() - start_time
-        logging.info(f"Loaded {names.count()} names in {loading_info['names']['time']:.2f} seconds")
-    except FileNotFoundError:
-        logging.warning("Names.txt not found. Proceeding without names data.")
+    load_file('Names.txt', names, "names")
 
     # Load ChinesePhienAmWords.txt
     try:
         start_time = time.time()
         with open('ChinesePhienAmWords.txt', 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
-                parts = line.strip().split('=')
-                if len(parts) == 2:
-                    chinese_phien_am[parts[0]] = parts[1]
+            chinese_phien_am = dict(line.strip().split('=') for line in f if len(line.strip().split('=')) == 2)
         loading_info["chinese_words"]["loaded"] = True
         loading_info["chinese_words"]["count"] = len(chinese_phien_am)
         loading_info["chinese_words"]["time"] = time.time() - start_time
@@ -111,29 +149,18 @@ def load_data():
         logging.warning("ChinesePhienAmWords.txt not found.")
 
     # Load VietPhrase.txt
-    try:
-        start_time = time.time()
-        vietphrase_entries = []
-        with open('VietPhrase.txt', 'r', encoding='utf-8') as f:
-            for line in f:
-                parts = line.strip().split('=')
-                if len(parts) == 2:
-                    key, value = parts
-                    first_value = value.split('/')[0]
-                    vietphrase_entries.append((key, first_value))
-        viet_phrase.batch_insert(vietphrase_entries)
-        loading_info["viet_phrase"]["loaded"] = True
-        loading_info["viet_phrase"]["count"] = len(vietphrase_entries)
-        loading_info["viet_phrase"]["time"] = time.time() - start_time
-        logging.info(f"Loaded {len(vietphrase_entries)} VietPhrase entries in {loading_info['viet_phrase']['time']:.2f} seconds")
-    except FileNotFoundError:
-        logging.error("VietPhrase.txt not found. This file is required.")
-        raise
+    load_file('VietPhrase.txt', viet_phrase, "viet_phrase", is_vietphrase=True)
 
     return names2, names, viet_phrase, chinese_phien_am, loading_info
 
+def read_novel_file(file_path: str) -> Tuple[str, str]:
+    """
+    Read a novel file using various encodings.
 
-def read_novel_file(file_path):
+    :param file_path: Path to the novel file
+    :return: A tuple containing the novel text and the encoding used
+    :raises ValueError: If unable to read the file with any of the attempted encodings
+    """
     encodings_to_try = ['utf-8', 'gbk', 'gb2312', 'big5']
     for encoding in encodings_to_try:
         try:
@@ -145,7 +172,13 @@ def read_novel_file(file_path):
             logging.warning(f"Failed to read with {encoding} encoding.")
     raise ValueError("Unable to read the novel file with any of the attempted encodings.")
 
-def replace_special_chars(text):
+def replace_special_chars(text: str) -> str:
+    """
+    Replace special characters in the text with their Vietnamese equivalents.
+
+    :param text: The input text
+    :return: The text with special characters replaced
+    """
     original = text
     for han, viet in SPECIAL_CHARS.items():
         text = text.replace(han, viet)
@@ -154,7 +187,18 @@ def replace_special_chars(text):
         logging.debug(f"Special characters replaced: '{original}' -> '{text}'")
     return text
 
-def convert_to_sino_vietnamese(text, names2, names, viet_phrase, chinese_phien_am):
+@profile_function
+def convert_to_sino_vietnamese(text: str, names2: Trie, names: Trie, viet_phrase: Trie, chinese_phien_am: Dict[str, str]) -> str:
+    """
+    Convert Chinese text to Sino-Vietnamese.
+
+    :param text: The input Chinese text
+    :param names2: Trie containing Names2 data
+    :param names: Trie containing Names data
+    :param viet_phrase: Trie containing VietPhrase data
+    :param chinese_phien_am: Dictionary containing Chinese Phien Am data
+    :return: The converted Sino-Vietnamese text
+    """
     text = replace_special_chars(text)
     tokens = []
     i = 0
@@ -216,23 +260,43 @@ def rephrase(tokens):
 
     text = ''.join(result).strip()
     # Remove spaces after left quotation marks and capitalize first word
-    text = re.sub(r'([\[\“\‘])\s*(\w)', lambda m: m.group(1) + m.group(2).upper(), text)
+    text = re.sub(r'([\[\"\'])\s*(\w)', lambda m: m.group(1) + m.group(2).upper(), text)
     # Remove spaces before right quotation marks
-    text = re.sub(r'\s+([”\’\]])', r'\1', text)
+    text = re.sub(r'\s+(["\'\]])', r'\1', text)
     # Capitalize first word after ? and ! marks
     text = re.sub(r'([?!⟨:])\s+(\w)', lambda m: m.group(1) + ' ' + m.group(2).upper(), text)
     # Remove spaces before colon and semicolon
     text = re.sub(r'\s+([;:?!.])', r'\1', text)
     # Capitalize first word after a single dot, but not after triple dots
     text = re.sub(r'(?<!\.)\.(?!\.)\s+(\w)', lambda m: '. ' + m.group(1).upper(), text)
-
     return text
 
-def process_paragraph(paragraph, names2, names, viet_phrase, chinese_phien_am):
+@profile_function
+def process_paragraph(paragraph: str, names2: Trie, names: Trie, viet_phrase: Trie, chinese_phien_am: Dict[str, str]) -> str:
+    """
+    Process a single paragraph of text.
+
+    :param paragraph: The input paragraph
+    :param names2: Trie containing Names2 data
+    :param names: Trie containing Names data
+    :param viet_phrase: Trie containing VietPhrase data
+    :param chinese_phien_am: Dictionary containing Chinese Phien Am data
+    :return: The processed paragraph
+    """
     converted = convert_to_sino_vietnamese(paragraph, names2, names, viet_phrase, chinese_phien_am)
     return converted
 
-def convert_filename(filename, names2, names, viet_phrase, chinese_phien_am):
+def convert_filename(filename: str, names2: Trie, names: Trie, viet_phrase: Trie, chinese_phien_am: Dict[str, str]) -> str:
+    """
+    Convert a filename to Sino-Vietnamese.
+
+    :param filename: The input filename
+    :param names2: Trie containing Names2 data
+    :param names: Trie containing Names data
+    :param viet_phrase: Trie containing VietPhrase data
+    :param chinese_phien_am: Dictionary containing Chinese Phien Am data
+    :return: The converted filename
+    """
     base_name = os.path.basename(filename)
     name_without_ext, ext = os.path.splitext(base_name)
     converted_name = convert_to_sino_vietnamese(name_without_ext, names2, names, viet_phrase, chinese_phien_am)
@@ -241,4 +305,3 @@ def convert_filename(filename, names2, names, viet_phrase, chinese_phien_am):
     converted_name = ''.join(char for char in converted_name if char not in r'<>:"/\|?*')
     
     return f"{converted_name}_Converted{ext}"
-
