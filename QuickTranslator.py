@@ -2,12 +2,12 @@ import re
 import logging
 from typing import Dict, List, Tuple, Optional, Any
 from ReplaceChar import SPECIAL_CHARS
-from typing import List
 import time
 import os
 import cProfile
-import pstats
-import io
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+LATIN_CHARS = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
 
 class TrieNode:
     __slots__ = ['children', 'is_end_of_word', 'value']
@@ -22,12 +22,6 @@ class Trie:
         self.word_count: int = 0
 
     def insert(self, word: str, value: str) -> None:
-        """
-        Insert a word and its associated value into the Trie.
-
-        :param word: The word to insert
-        :param value: The value associated with the word
-        """
         current = self.root
         for char in word:
             if char not in current.children:
@@ -38,29 +32,13 @@ class Trie:
         self.word_count += 1
 
     def batch_insert(self, words: List[Tuple[str, str]]) -> None:
-        """
-        Insert multiple words and their associated values into the Trie.
-
-        :param words: A list of tuples, each containing a word and its associated value
-        """
         for word, value in words:
             self.insert(word, value)
 
     def count(self) -> int:
-        """
-        Return the number of words in the Trie.
-
-        :return: The number of words
-        """
         return self.word_count
 
     def find_longest_prefix(self, text: str) -> Tuple[str, Optional[str]]:
-        """
-        Find the longest prefix of the given text that exists in the Trie.
-
-        :param text: The text to search for a prefix
-        :return: A tuple containing the longest prefix and its associated value (if any)
-        """
         current = self.root
         longest_prefix = ""
         longest_value = None
@@ -81,21 +59,20 @@ def profile_function(func):
         pr.enable()
         result = func(*args, **kwargs)
         pr.disable()
-        s = io.StringIO()
-        ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
-        ps.print_stats()
-        logging.info(f"Performance profile for {func.__name__}:\n{s.getvalue()}")
+        
+        stats = pr.getstats()
+        total_calls = sum(stat.callcount for stat in stats)
+        total_time = sum(stat.totaltime for stat in stats)
+        
+        logging.info(f"Performance profile for {func.__name__}:")
+        logging.info(f"Total function calls: {total_calls}")
+        logging.info(f"Total time: {total_time:.6f} seconds")
+        
         return result
     return wrapper
 
 @profile_function
 def load_data() -> Tuple[Trie, Trie, Trie, Dict[str, str], Dict[str, Dict[str, Any]]]:
-    """
-    Load data from various files and return Trie structures and dictionaries.
-
-    :return: A tuple containing Trie structures for names2, names, viet_phrase,
-             a dictionary for chinese_phien_am, and a dictionary with loading information
-    """
     names2 = Trie()
     names = Trie()
     viet_phrase = Trie()
@@ -154,13 +131,6 @@ def load_data() -> Tuple[Trie, Trie, Trie, Dict[str, str], Dict[str, Dict[str, A
     return names2, names, viet_phrase, chinese_phien_am, loading_info
 
 def read_novel_file(file_path: str) -> Tuple[str, str]:
-    """
-    Read a novel file using various encodings.
-
-    :param file_path: Path to the novel file
-    :return: A tuple containing the novel text and the encoding used
-    :raises ValueError: If unable to read the file with any of the attempted encodings
-    """
     encodings_to_try = ['utf-8', 'gbk', 'gb2312', 'big5']
     for encoding in encodings_to_try:
         try:
@@ -173,64 +143,61 @@ def read_novel_file(file_path: str) -> Tuple[str, str]:
     raise ValueError("Unable to read the novel file with any of the attempted encodings.")
 
 def replace_special_chars(text: str) -> str:
-    """
-    Replace special characters in the text with their Vietnamese equivalents.
-
-    :param text: The input text
-    :return: The text with special characters replaced
-    """
-    original = text
     for han, viet in SPECIAL_CHARS.items():
         text = text.replace(han, viet)
-
-    if original != text:
-        logging.debug(f"Special characters replaced: '{original}' -> '{text}'")
     return text
 
 @profile_function
 def convert_to_sino_vietnamese(text: str, names2: Trie, names: Trie, viet_phrase: Trie, chinese_phien_am: Dict[str, str]) -> str:
-    """
-    Convert Chinese text to Sino-Vietnamese.
-
-    :param text: The input Chinese text
-    :param names2: Trie containing Names2 data
-    :param names: Trie containing Names data
-    :param viet_phrase: Trie containing VietPhrase data
-    :param chinese_phien_am: Dictionary containing Chinese Phien Am data
-    :return: The converted Sino-Vietnamese text
-    """
     text = replace_special_chars(text)
+    
     tokens = []
     i = 0
+    chunk_size = 1000  # Process text in chunks of 1000 characters internally
+    
     while i < len(text):
-        # Check Names2 first
-        name2_match, value = names2.find_longest_prefix(text[i:])
-        if name2_match:
-            tokens.append(value)
-            i += len(name2_match)
-            continue
-
-        # Then check Names
-        name_match, value = names.find_longest_prefix(text[i:])
-        if name_match:
-            tokens.append(value)
-            i += len(name_match)
-            continue
-
-        # Try to find the longest prefix in VietPhrase
-        max_prefix, value = viet_phrase.find_longest_prefix(text[i:])
-        if max_prefix:
-            if value != "":
+        chunk = text[i:i+chunk_size]
+        j = 0
+        
+        while j < len(chunk):
+            # Check for a sequence of Latin characters
+            latin_start = j
+            while j < len(chunk) and chunk[j] in LATIN_CHARS:
+                j += 1
+            if j > latin_start:
+                latin_text = chunk[latin_start:j]
+                tokens.append(latin_text)
+                continue
+            
+            # Check Names2 first
+            name2_match, value = names2.find_longest_prefix(chunk[j:])
+            if name2_match:
                 tokens.append(value)
-            i += len(max_prefix)
-        else:
-            # If no match found, fallback to ChinesePhienAmWord
-            char = text[i]
-            fallback_value = chinese_phien_am.get(char, char)
-            tokens.append(fallback_value)
-            i += 1
-
-    # Apply the rephrase function to the tokens
+                j += len(name2_match)
+                continue
+            
+            # Then check Names
+            name_match, value = names.find_longest_prefix(chunk[j:])
+            if name_match:
+                tokens.append(value)
+                j += len(name_match)
+                continue
+            
+            # Try to find the longest prefix in VietPhrase
+            max_prefix, value = viet_phrase.find_longest_prefix(chunk[j:])
+            if max_prefix:
+                if value != "":
+                    tokens.append(value)
+                j += len(max_prefix)
+            else:
+                # If no match found, fallback to ChinesePhienAmWord
+                char = chunk[j]
+                fallback_value = chinese_phien_am.get(char, char)
+                tokens.append(fallback_value)
+                j += 1
+        
+        i += chunk_size
+    
     result = rephrase(tokens)
     return result
 
@@ -260,11 +227,11 @@ def rephrase(tokens):
 
     text = ''.join(result).strip()
     # Remove spaces after left quotation marks and capitalize first word
-    text = re.sub(r'([\[\"\'])\s*(\w)', lambda m: m.group(1) + m.group(2).upper(), text)
+    text = re.sub(r'([\[\“\‘])\s*(\w)', lambda m: m.group(1) + m.group(2).upper(), text)
     # Remove spaces before right quotation marks
-    text = re.sub(r'\s+(["\'\]])', r'\1', text)
+    text = re.sub(r'\s+([”\’\]])', r'\1', text)
     # Capitalize first word after ? and ! marks
-    text = re.sub(r'([?!⟨:])\s+(\w)', lambda m: m.group(1) + ' ' + m.group(2).upper(), text)
+    text = re.sub(r'([?!⟨:«])\s+(\w)', lambda m: m.group(1) + ' ' + m.group(2).upper(), text)
     # Remove spaces before colon and semicolon
     text = re.sub(r'\s+([;:?!.])', r'\1', text)
     # Capitalize first word after a single dot, but not after triple dots
@@ -273,30 +240,10 @@ def rephrase(tokens):
 
 @profile_function
 def process_paragraph(paragraph: str, names2: Trie, names: Trie, viet_phrase: Trie, chinese_phien_am: Dict[str, str]) -> str:
-    """
-    Process a single paragraph of text.
-
-    :param paragraph: The input paragraph
-    :param names2: Trie containing Names2 data
-    :param names: Trie containing Names data
-    :param viet_phrase: Trie containing VietPhrase data
-    :param chinese_phien_am: Dictionary containing Chinese Phien Am data
-    :return: The processed paragraph
-    """
     converted = convert_to_sino_vietnamese(paragraph, names2, names, viet_phrase, chinese_phien_am)
     return converted
 
 def convert_filename(filename: str, names2: Trie, names: Trie, viet_phrase: Trie, chinese_phien_am: Dict[str, str]) -> str:
-    """
-    Convert a filename to Sino-Vietnamese.
-
-    :param filename: The input filename
-    :param names2: Trie containing Names2 data
-    :param names: Trie containing Names data
-    :param viet_phrase: Trie containing VietPhrase data
-    :param chinese_phien_am: Dictionary containing Chinese Phien Am data
-    :return: The converted filename
-    """
     base_name = os.path.basename(filename)
     name_without_ext, ext = os.path.splitext(base_name)
     converted_name = convert_to_sino_vietnamese(name_without_ext, names2, names, viet_phrase, chinese_phien_am)
@@ -305,3 +252,31 @@ def convert_filename(filename: str, names2: Trie, names: Trie, viet_phrase: Trie
     converted_name = ''.join(char for char in converted_name if char not in r'<>:"/\|?*')
     
     return f"{converted_name}_Converted{ext}"
+
+# Cache for storing frequently converted phrases
+conversion_cache = {}
+
+def cached_convert_to_sino_vietnamese(text: str, names2: Trie, names: Trie, viet_phrase: Trie, chinese_phien_am: Dict[str, str]) -> str:
+    if text in conversion_cache:
+        return conversion_cache[text]
+    
+    result = convert_to_sino_vietnamese(text, names2, names, viet_phrase, chinese_phien_am)
+    conversion_cache[text] = result
+    return result
+
+@profile_function
+def process_novel(novel_text: str, names2: Trie, names: Trie, viet_phrase: Trie, chinese_phien_am: Dict[str, str], progress_callback=None) -> str:
+    paragraphs = novel_text.split('\n')
+    converted_paragraphs = []
+    total_paragraphs = len(paragraphs)
+
+    for i, paragraph in enumerate(paragraphs):
+        converted = cached_convert_to_sino_vietnamese(paragraph, names2, names, viet_phrase, chinese_phien_am)
+        converted_paragraphs.append(converted)
+        
+        if progress_callback:
+            progress = (i + 1) / total_paragraphs
+            if progress_callback(progress):
+                break  # Stop processing if the callback returns True
+
+    return '\n'.join(converted_paragraphs)

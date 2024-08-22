@@ -1,2 +1,7 @@
-dearpygui==1.10.1
-requests==2.31.0
+dearpygui
+hanlp
+hanzidentifier
+opencc-python-reimplemented
+pandas
+requests
+pywinstyles

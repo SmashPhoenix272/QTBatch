@@ -3,6 +3,7 @@ import requests
 import shutil
 import logging
 from typing import Tuple, List
+import hanzidentifier
 
 def check_and_download_fonts(font_dir: str, fonts: List[Tuple[str, str, str]]) -> None:
     """
@@ -42,3 +43,31 @@ def get_file_size_str(file_path: str) -> str:
         return f"{file_size / 1024:.2f} KB"
     else:
         return f"{file_size / (1024 * 1024):.2f} MB"
+
+def detect_chinese_script(text: str) -> str:
+    """
+    Detect whether the given text is in Traditional or Simplified Chinese.
+
+    :param text: The text to analyze
+    :return: "Traditional Chinese" or "Simplified Chinese"
+    """
+    try:
+        # Use hanzidentifier to determine the script
+        if hanzidentifier.is_simplified(text):
+            return "Simplified Chinese"
+        elif hanzidentifier.is_traditional(text):
+            return "Traditional Chinese"
+        else:
+            # If it's not clearly simplified or traditional, we'll do a more detailed analysis
+            simplified_count = sum(1 for char in text if hanzidentifier.is_simplified(char))
+            traditional_count = sum(1 for char in text if hanzidentifier.is_traditional(char))
+            
+            if simplified_count > traditional_count:
+                return "Simplified Chinese"
+            elif traditional_count > simplified_count:
+                return "Traditional Chinese"
+            else:
+                return "Mixed or Unknown Chinese Script"
+    except Exception as e:
+        logging.error(f"Error detecting Chinese script: {str(e)}")
+        return "Chinese (detection failed)"

@@ -1,7 +1,7 @@
 import os
 
 # Font configuration
-FONT_DIR = "font"
+FONT_DIR = "fonts"
 CHINESE_FONT_FILENAME = "NotoSansSC-Medium.ttf"
 VIETNAMESE_FONT_FILENAME = "Montserrat-Medium.ttf"
 CHINESE_FONT_PATH = os.path.join(FONT_DIR, CHINESE_FONT_FILENAME)
