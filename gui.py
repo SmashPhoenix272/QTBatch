@@ -3,9 +3,17 @@ import dearpygui.dearpygui as dpg
 from typing import Callable
 import config
 import logging
-import subprocess
-import pywinstyles
 import QuickTranslator as qt
+import pywinstyles
+from detect_chapters_methods import CHAPTER_MATCHERS
+from utils import detect_chapters
+from name_analyzer import CATEGORY_TRANSLATION
+from gui_utils import process_preview_text, open_csv_file, safe_callback
+from gui_updates import GUIUpdater
+from gui_dialogs import show_about, show_progress_dialog, close_progress_dialog, show_error_dialog
+from ai_proofread import AIProofreader
+from gui_ai_proofread import create_ai_proofread_settings_gui
+from export_names2_settings_gui import create_export_names2_settings_gui
 
 class GUI:
     def __init__(self, load_novel_callback: Callable, reload_names2_callback: Callable,
@@ -13,7 +21,9 @@ class GUI:
                  start_hanlp_callback: Callable, stop_hanlp_callback: Callable,
                  pause_hanlp_callback: Callable, resume_hanlp_callback: Callable,
                  export_names_to_csv_callback: Callable, csv_to_names2_callback: Callable,
-                 reanalyze_hanlp_callback: Callable, tc_to_sc_callback: Callable):
+                 reanalyze_hanlp_callback: Callable, tc_to_sc_callback: Callable,
+                 chapter_range_callback: Callable, pause_conversion_callback: Callable,
+                 resume_conversion_callback: Callable, set_max_workers_callback: Callable):
         self.load_novel_callback = load_novel_callback
         self.reload_names2_callback = reload_names2_callback
         self.start_conversion_callback = start_conversion_callback
@@ -26,10 +36,38 @@ class GUI:
         self.reanalyze_hanlp_callback = reanalyze_hanlp_callback
         self.csv_to_names2_callback = csv_to_names2_callback
         self.tc_to_sc_callback = tc_to_sc_callback
+        self.chapter_range_callback = chapter_range_callback
+        self.pause_conversion_callback = pause_conversion_callback
+        self.resume_conversion_callback = resume_conversion_callback
+        self.set_max_workers_callback = set_max_workers_callback
+        self.csv_to_names2_callback = lambda: csv_to_names2_callback(self.export_names2_settings, self.name_length_range)
+        self.export_names2_settings_gui = None
+        self.export_names2_settings = {
+            "Person Name": 1,
+            "Place Name": 1,
+            "Organization Name": 1
+        }
+        self.name_length_range = (1, 4)
         self.names2_reloaded = False
         self.hanlp_paused = False
-        self.min_appearances = 1
+        self.conversion_paused = False
+        self.export_names2_settings_gui = None
         self.conversion_data = None
+        self.advanced_options_visible = False
+        self.detect_chapters = False
+        self.current_detect_method = list(CHAPTER_MATCHERS.keys())[0]  # Set default to first method
+        self.chapter_detection_settings_window = None
+        self.detected_chapters = 0
+        self.start_chapter = 1
+        self.end_chapter = 999999
+        self.chapter_range_applied = False
+        self.novel_text = ""
+        self.export_filename = ""
+        self.novel_path = ""
+        self.ai_proofreader = AIProofreader(self, self.update_ai_proofread_settings)
+        self.ai_proofread_enabled = False
+        self.ai_proofread_settings_gui = None
+        self.max_workers = 4
 
     def create_gui(self):
         dpg.create_context()
@@ -39,33 +77,58 @@ class GUI:
             "bg_primary": (30, 30, 30),
             "bg_secondary": (45, 45, 45),
             "text_primary": (220, 220, 220),
-            "text_header": (255, 255, 255),
+            "text_header": (195, 145, 255),
             "accent": (0, 120, 215),
             "success": (0, 200, 0),
             "warning": (255, 165, 0),
-            "error": (255, 0, 0)
+            "error": (255, 0, 0),
+            "input_bg": (60, 60, 60),
+            "input_border": (100, 100, 100)
         }
+
+        self.gui_updater = GUIUpdater(self.colors)
 
         with dpg.theme() as global_theme:
             with dpg.theme_component(dpg.mvAll):
                 dpg.add_theme_color(dpg.mvThemeCol_WindowBg, self.colors["bg_primary"])
                 dpg.add_theme_color(dpg.mvThemeCol_ChildBg, self.colors["bg_secondary"])
                 dpg.add_theme_color(dpg.mvThemeCol_Text, self.colors["text_primary"])
-                dpg.add_theme_color(dpg.mvThemeCol_Button, self.colors["accent"])
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, [c + 30 for c in self.colors["accent"]])
-                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, [c + 50 for c in self.colors["accent"]])
                 dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 5)
                 dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 5)
 
+            # Button theme
+            with dpg.theme_component(dpg.mvButton):
+                dpg.add_theme_color(dpg.mvThemeCol_Button, self.colors["accent"])
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, [c + 30 for c in self.colors["accent"]])
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, [c + 50 for c in self.colors["accent"]])
+
+            # Input box theme
+            for component in [dpg.mvInputInt, dpg.mvInputFloat, dpg.mvInputText]:
+                with dpg.theme_component(component):
+                    dpg.add_theme_color(dpg.mvThemeCol_FrameBg, self.colors["input_bg"])
+                    dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, [c + 20 for c in self.colors["input_bg"]])
+                    dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, [c + 40 for c in self.colors["input_bg"]])
+                    dpg.add_theme_color(dpg.mvThemeCol_Border, self.colors["input_border"])
+                    dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 1)
+
+            # Checkbox theme
+            with dpg.theme_component(dpg.mvCheckbox):
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, self.colors["input_bg"])
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, [c + 20 for c in self.colors["input_bg"]])
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, [c + 40 for c in self.colors["input_bg"]])
+                dpg.add_theme_color(dpg.mvThemeCol_Border, self.colors["input_border"])
+                dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 1)
+                dpg.add_theme_color(dpg.mvThemeCol_CheckMark, self.colors["accent"])
+
         dpg.bind_theme(global_theme)
 
-        with dpg.window(label="QuickTranslator Batch", tag="main_window", width=1000, height=800):
+        with dpg.window(label="QuickTranslator Batch", tag="main_window", width=1204, height=800):
             with dpg.menu_bar():
                 with dpg.menu(label="File"):
                     dpg.add_menu_item(label="Load Novel", callback=lambda: dpg.show_item("file_dialog_id"), tag="load_novel_menu")
                     dpg.add_menu_item(label="Exit", callback=lambda: dpg.stop_dearpygui())
-                with dpg.menu(label="Settings"):
-                    dpg.add_menu_item(label="About", callback=self.show_about)
+                with dpg.menu(label="FAQ"):
+                    dpg.add_menu_item(label="About", callback=lambda: show_about())
 
             with dpg.group(horizontal=True):
                 with dpg.group():
@@ -75,15 +138,17 @@ class GUI:
                     with dpg.child_window(width=304, height=-35):
                         self.add_hanlp_analysis_window()
 
-                with dpg.child_window(width=-1, height=-35):
+                with dpg.child_window(width=859, height=684):
                     with dpg.group():
                         with dpg.group(horizontal=True):
                             dpg.add_button(label="Load Novel", callback=lambda: dpg.show_item("file_dialog_id"), tag="load_novel_button")
-                            dpg.add_button(label="Convert TC to SC", callback=lambda: self.tc_to_sc_callback(), tag="tc_to_sc_button")
-                            dpg.add_button(label="Reload Names2", callback=lambda: self.reload_names2_callback(), tag="reload_names2_button")
-                            dpg.add_button(label="Start Conversion", callback=lambda: self.start_conversion_callback(), tag="start_conversion_button")
-                            dpg.add_button(label="Stop Conversion", callback=lambda: self.stop_conversion_callback(), tag="stop_conversion_button")
-                    
+                            dpg.add_button(label="Convert TC to SC", callback=lambda: safe_callback(self.tc_to_sc_callback), tag="tc_to_sc_button")
+                            dpg.add_button(label="Reload Names2", callback=lambda: safe_callback(self.reload_names2_callback), tag="reload_names2_button")
+                            dpg.add_button(label="Start Conversion", callback=lambda: self.start_conversion(), tag="start_conversion_button")
+                            dpg.add_button(label="Stop Conversion", callback=lambda: safe_callback(self.stop_conversion_callback), tag="stop_conversion_button")
+                            dpg.add_button(label="Pause/Resume", callback=self.toggle_pause_conversion, tag="pause_resume_conversion_button")
+                            dpg.add_button(label="Advanced Options", callback=lambda: self.toggle_advanced_options(), tag="advanced_options_button")
+                                                
                     dpg.add_separator()
                     dpg.add_text("Novel Status", color=self.colors["text_header"])
                     self.add_novel_status_tables()
@@ -105,23 +170,35 @@ class GUI:
                     dpg.add_text("0%", tag="conversion_percentage", before="conversion_progress")
                     dpg.add_progress_bar(label="Conversion Progress", width=-1, tag="conversion_progress")
 
-            # Add status bar
+                with dpg.child_window(width=270, height=684, show=False, tag="advanced_options_window"):
+                    self.add_advanced_options()
+
             with dpg.group(horizontal=True):
                 dpg.add_text("Status: ", tag="status_bar_label")
                 dpg.add_text("Ready", tag="status_bar_text")
 
-        with dpg.file_dialog(directory_selector=False, show=False, callback=lambda sender, app_data: self.load_novel_callback(sender, app_data), tag="file_dialog_id"):
+            with dpg.window(label="Chapter Detection Settings", width=400, height=400, show=False, tag="chapter_detection_settings_window"):
+                dpg.add_text("Select a chapter detection method:")
+                dpg.add_radio_button(
+                    items=list(CHAPTER_MATCHERS.keys()),
+                    default_value=self.current_detect_method,
+                    callback=self.update_detect_method,
+                    horizontal=False,
+                    tag="chapter_detection_methods"
+                )
+        with dpg.file_dialog(directory_selector=False, show=False, callback=lambda sender, app_data: self.load_novel(sender, app_data), tag="file_dialog_id", width=700, height=600):
             dpg.add_file_extension(".txt", color=(255, 255, 0, 255))
 
-        dpg.create_viewport(title="QuickTranslator Batch", width=1075, height=800)
-        
+        dpg.create_viewport(title="QuickTranslator Batch", width=1204, height=800)
+        dpg.set_viewport_small_icon("icons/icon_32x32.ico")
+        dpg.set_viewport_large_icon("icons/icon_256x256.ico")
         dpg.setup_dearpygui()
         dpg.show_viewport()
+        pywinstyles.apply_style(self,"dark")
         dpg.set_primary_window("main_window", True)
-
         self.add_tooltips()
-        self.update_novel_status("", "", "", "")
-        pywinstyles.apply_style("main_window","dark")
+        self.gui_updater.update_novel_status("", "", "", "")
+
 
     def add_data_status_window(self):
         dpg.add_text("Data Status", color=self.colors["text_header"])
@@ -150,10 +227,10 @@ class GUI:
     def add_hanlp_analysis_section(self):
         with dpg.group():
             with dpg.group(horizontal=True):
-                dpg.add_button(label="Start", callback=lambda: self.start_hanlp_callback(), tag="start_hanlp_button")
-                dpg.add_button(label="Stop", callback=lambda: self.stop_hanlp_callback(), tag="stop_hanlp_button")
-                dpg.add_button(label="Pause/Resume", callback=lambda: self.toggle_pause_hanlp(), tag="pause_resume_hanlp_button")
-                dpg.add_button(label="ReAnalyze", callback=lambda: self.reanalyze_hanlp_callback(), tag="reanalyze_hanlp_button")
+                dpg.add_button(label="Start", callback=lambda: safe_callback(self.start_hanlp_callback), tag="start_hanlp_button")
+                dpg.add_button(label="Stop", callback=lambda: safe_callback(self.stop_hanlp_callback), tag="stop_hanlp_button")
+                dpg.add_button(label="Pause/Resume", callback=lambda: safe_callback(self.toggle_pause_hanlp), tag="pause_resume_hanlp_button")
+                dpg.add_button(label="ReAnalyze", callback=lambda: safe_callback(self.reanalyze_hanlp_callback), tag="reanalyze_hanlp_button")
              
             dpg.add_text("HanLP Progress", color=self.colors["text_header"])
             dpg.add_text("0%", tag="hanlp_percentage", before="hanlp_progress")
@@ -162,16 +239,18 @@ class GUI:
 
             dpg.add_text("Name Analyzing Status", color=self.colors["text_header"])
             self.add_name_analyzing_status_table()
+            dpg.add_spacer(height=5)
 
             with dpg.group(horizontal=True):
-                dpg.add_button(label="Export Names to CSV", callback=lambda: self.export_names_to_csv_callback(), tag="export_names_button")
-                dpg.add_button(label="Open CSV File", callback=self.open_csv_file, tag="open_csv_button")
-                dpg.add_spacer(height=10)
-            
-            with dpg.group():
-                dpg.add_separator()
-                dpg.add_input_int(label="Min Appearances", default_value=self.min_appearances, callback=lambda sender, app_data: self.update_min_appearances(sender, app_data), width=100, tag="min_appearances_input")
-                dpg.add_button(label="CSV To Names2", callback=lambda: self.csv_to_names2_callback(self.min_appearances), tag="csv_to_names2_button")
+                dpg.add_button(label="Export Names to CSV", callback=lambda: safe_callback(self.export_names_to_csv_callback), tag="export_names_button", width=150)
+                dpg.add_button(label="Open CSV File", callback=lambda: safe_callback(open_csv_file), tag="open_csv_button", width=-1)
+                
+            dpg.add_spacer(height=5)
+            dpg.add_separator()
+            dpg.add_spacer(height=5)
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="CSV To Names2", callback=lambda: safe_callback(self.csv_to_names2_callback), tag="csv_to_names2_button", width=150)
+                dpg.add_button(label="Settings", callback=lambda: self.create_export_names2_settings_gui(), tag="export_names2_settings_button", width=-1)
 
     def add_name_analyzing_status_table(self):
         with dpg.table(header_row=True, borders_innerH=True, borders_outerH=True, borders_innerV=True, borders_outerV=True):
@@ -184,20 +263,18 @@ class GUI:
                     dpg.add_text("0", tag=f"{category.lower().replace(' ', '_')}_count")
 
     def add_novel_status_tables(self):
-        # First table for Loaded File
         with dpg.table(header_row=False, borders_innerH=True, borders_outerH=True, borders_innerV=True, borders_outerV=True, tag="loaded_file_table"):
-            dpg.add_table_column(width_fixed=True, init_width_or_weight=100)  # Adjust width as needed
+            dpg.add_table_column(width_fixed=True, init_width_or_weight=100)
             dpg.add_table_column(width_stretch=True)
             
             with dpg.table_row():
                 dpg.add_text("Loaded File")
                 dpg.add_text("", tag="loaded_file")
 
-        dpg.add_spacer(height=5)  # Add some space between tables
+        dpg.add_spacer(height=5)
 
-        # Second table for Encoding, Size, and Form
         with dpg.table(header_row=False, borders_innerH=True, borders_outerH=True, borders_innerV=True, borders_outerV=True, tag="novel_info_table"):
-            dpg.add_table_column(width_stretch=True, init_width_or_weight=0.5)  # Same width as first column of first table
+            dpg.add_table_column(width_stretch=True, init_width_or_weight=0.5)
             dpg.add_table_column(width_stretch=True, init_width_or_weight=0.5)
             dpg.add_table_column(width_stretch=True, init_width_or_weight=0.5)
             
@@ -210,6 +287,41 @@ class GUI:
                 dpg.add_text("", tag="encoding")
                 dpg.add_text("", tag="size")
                 dpg.add_text("", tag="chinese_form")
+
+    def add_advanced_options(self):
+        dpg.add_text("Chapters Function", color=self.colors["text_header"])
+
+        with dpg.group(horizontal=True):
+            dpg.add_checkbox(label="Detect Chapters", callback=lambda sender, app_data: self.toggle_detect_chapters(sender, app_data), tag="detect_chapters_checkbox")
+            dpg.add_button(label="Settings", callback=self.show_chapter_detection_settings, width=-1)
+
+        dpg.add_text("Current Detection Method:", tag="current_method_label")
+        with dpg.child_window(width=255, height=65):
+            dpg.add_text(self.current_detect_method, wrap=235, tag="current_method")
+
+        dpg.add_text("Detected Chapters: 0", tag="detected_chapters_text")
+
+        with dpg.group(tag="chapter_range_group"):
+            dpg.add_input_int(label="Start Chapter", default_value=self.start_chapter, callback=lambda sender, app_data: self.update_start_chapter(sender, app_data), width=150, tag="start_chapter_input", min_value=1)
+            dpg.add_input_int(label="End Chapter", default_value=self.end_chapter, callback=lambda sender, app_data: self.update_end_chapter(sender, app_data), width=150, tag="end_chapter_input", min_value=1)
+        dpg.add_checkbox(label="Apply to Conversion", tag="apply_to_conversion_checkbox")
+        dpg.add_checkbox(label="Apply to HanLP", tag="apply_to_hanlp_checkbox")
+        dpg.add_button(label="Apply Chapter Range", callback=lambda: self.apply_chapter_range(), tag="apply_chapter_range_button", width=-1)
+        dpg.add_separator()
+        dpg.add_text("Parallel Processing", color=self.colors["text_header"])
+        dpg.add_input_int(label="Max Workers", default_value=self.max_workers, callback=self.update_max_workers, min_value=1, max_value=16)
+        dpg.add_separator()
+        dpg.add_text("AI Proofread", color=self.colors["text_header"])
+        dpg.add_checkbox(label="Enable AI Proofread", callback=self.toggle_ai_proofread, tag="ai_proofread_checkbox")
+        dpg.add_spacer(height=5)
+        dpg.add_button(label="AI Proofread Settings", callback=self.create_ai_proofread_settings_gui)
+        dpg.add_text("Tokens: 0", tag="ai_proofread_tokens")
+        dpg.add_text("Cost: $0.00", tag="ai_proofread_cost")
+        dpg.add_spacer(height=3)
+        dpg.add_text("Cache: 0%", tag="ai_proofread_cache_percentage")
+        dpg.add_button(label="Reset AI Proofread Cache", callback=self.reset_ai_proofread_cache)
+        dpg.add_spacer(height=3)
+        dpg.add_text("Status: Idle", tag="ai_proofread_status")
 
     def add_tooltips(self):
         tooltips = [
@@ -228,7 +340,13 @@ class GUI:
             ("export_names_button", "Click to export analyzed names to CSV"),
             ("open_csv_button", "Click to open the exported CSV file"),
             ("csv_to_names2_button", "Click to convert CSV data to Names2.txt"),
-            ("min_appearances_input", "Set the minimum number of appearances for a name to be included in Names2.txt")
+            ("min_appearances_input", "Set the minimum number of appearances for a name to be included in Names2.txt"),
+            ("advanced_options_button", "Click to toggle advanced options"),
+            ("detect_chapters_checkbox", "Enable or disable chapter detection"),
+            ("start_chapter_input", "Set the starting chapter for conversion"),
+            ("end_chapter_input", "Set the ending chapter for conversion"),
+            ("apply_chapter_range_button", "Apply the selected chapter range for conversion"),
+            ("export_names2_settings_button", "Click to open Export Names2 settings")
         ]
 
         for tag, text in tooltips:
@@ -276,60 +394,7 @@ class GUI:
         dpg.destroy_context()
 
     def update_status(self, loading_info):
-        for key, info in loading_info.items():
-            self._update_status_item(key, info)
-
-    def _update_status_item(self, key, info):
-        try:
-            status_text = "Loaded" if info['loaded'] else "Not loaded"
-            if key == "names2" and hasattr(self, 'names2_reloaded') and self.names2_reloaded:
-                status_text = "Reloaded"
-
-            status_color = self.colors["success"] if info['loaded'] else self.colors["error"]
-            
-            dpg.set_value(f"{key}_status", status_text)
-            dpg.configure_item(f"{key}_status", color=status_color)
-
-            if info['loaded']:
-                dpg.set_value(f"{key}_count", f"{info['count']}")
-                if 'time' in info:
-                    dpg.set_value(f"{key}_time", f"{info['time']:.2f}s")
-
-            self.update_status_bar(f"{key.capitalize()} {status_text}")
-        except Exception as e:
-            logging.error(f"Error updating {key}: {str(e)}")
-            logging.error(f"Info for {key}: {info}")
-
-    def update_novel_status(self, novel_name: str, encoding: str, size_str: str, chinese_form: str):
-        dpg.set_value("loaded_file", novel_name)
-        dpg.set_value("encoding", encoding)
-        dpg.set_value("size", size_str)
-        dpg.set_value("chinese_form", chinese_form)
-        self.update_status_bar(f"Novel loaded: {novel_name}")
-
-    def update_novel_preview(self, preview: str):
-        dpg.set_value("novel_preview", preview)
-
-    def update_conversion_preview(self, preview: str):
-        # Process the preview text using the same workflow as QuickTranslator.py
-        processed_preview = self.process_preview_text(preview)
-        dpg.set_value("conversion_preview", processed_preview)
-
-    def process_preview_text(self, text: str) -> str:
-        names2, names, viet_phrase, chinese_phien_am = self.get_conversion_data()
-        
-        # Split the text into paragraphs
-        paragraphs = text.split('\n')
-        
-        # Process each paragraph
-        processed_paragraphs = []
-        for paragraph in paragraphs:
-            if paragraph.strip():  # Skip empty paragraphs
-                converted = qt.process_paragraph(paragraph, names2, names, viet_phrase, chinese_phien_am)
-                processed_paragraphs.append(converted)
-        
-        # Join the processed paragraphs with line breaks
-        return '\n'.join(processed_paragraphs)
+        self.gui_updater.update_status(loading_info, self.names2_reloaded)
 
     def get_conversion_data(self):
         if self.conversion_data is None:
@@ -338,46 +403,7 @@ class GUI:
 
     def set_conversion_data(self, names2, names, viet_phrase, chinese_phien_am):
         self.conversion_data = (names2, names, viet_phrase, chinese_phien_am)
-
-    def update_conversion_status(self, status: str, color: tuple = None):
-        dpg.set_value("conversion_status", status)
-        if color:
-            dpg.configure_item("conversion_status", color=color)
-        self.update_status_bar(f"Conversion: {status}")
-
-    def update_conversion_progress(self, progress: float):
-        dpg.set_value("conversion_progress", progress)
-        
-    def update_conversion_percent(self, progress: float, color: tuple = None):
-        percentage = progress * 100
-        dpg.set_value("conversion_percentage", f"{percentage:.2f}%")
-        if color:
-            dpg.configure_item("conversion_percentage", color=color)
-        else:
-            dpg.configure_item("conversion_percentage", color=self.colors["success"])
-
-    def update_conversion_time(self, time: float):
-        if time:
-            dpg.set_value("conversion_time", f"Time taken: {time:.2f} seconds")
-            dpg.configure_item("conversion_time", color=self.colors["success"])
-        else:
-            dpg.set_value("conversion_time", "")
-
-    def update_hanlp_progress(self, progress: float):
-        dpg.set_value("hanlp_progress", progress)
-        percentage = progress * 100
-        dpg.set_value("hanlp_percentage", f"{percentage:.2f}%")
-
-    def update_hanlp_estimated_time(self, estimated_time: float):
-        dpg.set_value("hanlp_estimated_time", f"Estimated time: {estimated_time:.2f} seconds")
-
-    def update_name_analyzing_status(self, status: dict):
-        for category, count in status.items():
-            tag = f"{category.lower().replace(' ', '_')}_count"
-            if dpg.does_item_exist(tag):
-                dpg.set_value(tag, str(count))
-            else:
-                logging.warning(f"Tag '{tag}' does not exist for category '{category}'")
+        self.gui_updater.set_conversion_data(self.conversion_data)
 
     def toggle_pause_hanlp(self):
         if self.hanlp_paused:
@@ -389,23 +415,321 @@ class GUI:
             self.hanlp_paused = True
             dpg.configure_item("pause_resume_hanlp_button", label="Resume HanLP")
 
-    def open_csv_file(self):
-        try:
-            subprocess.Popen(['start', 'AnalyzedNames.csv'], shell=True)
-        except Exception as e:
-            logging.error(f"Error opening CSV file: {str(e)}")
-            self.update_status_bar("Error opening CSV file")
-
-    def update_status_bar(self, message: str):
-        dpg.set_value("status_bar_text", message)
-
-    def show_about(self):
-        with dpg.window(label="About", modal=True, width=400, height=200):
-            dpg.add_text("QuickTranslator Batch Ver 2.5.0")
-            dpg.add_text("Created thanks to Perplexity.ai + Claude.ai")
-            dpg.add_text("Source: https://github.com/SmashPhoenix272/QTBatch")
-            dpg.add_button(label="Close", callback=lambda: dpg.delete_item(dpg.get_item_parent(dpg.last_item())))
-
     def update_min_appearances(self, sender, app_data):
         self.min_appearances = app_data
-        self.update_status_bar(f"Minimum appearances set to {self.min_appearances}")
+        self.gui_updater.update_min_appearances(self.min_appearances)
+
+    def toggle_advanced_options(self):
+        self.advanced_options_visible = not self.advanced_options_visible
+        if self.advanced_options_visible:
+            dpg.configure_viewport(0, width=1482)
+            dpg.show_item("advanced_options_window")
+        else:
+            dpg.configure_viewport(0, width=1204)
+            dpg.hide_item("advanced_options_window")
+            dpg.set_value("detect_chapters_checkbox", False)
+            self.detect_chapters = False
+            self.gui_updater.update_status_bar("Chapter detection disabled")
+            
+            self.detected_chapters = 0
+            dpg.set_value("detected_chapters_text", "Detected Chapters: 0")
+            
+            self.end_chapter = 999999
+            dpg.set_value("end_chapter_input", self.end_chapter)
+            
+            self.start_chapter = 1
+            dpg.set_value("start_chapter_input", self.start_chapter)
+            dpg.configure_item("chapter_range_group", show=True)
+            dpg.set_value("apply_to_conversion_checkbox", False)
+            self.apply_to_conversion = False
+            dpg.set_value("apply_to_hanlp_checkbox", False)
+            self.apply_to_hanlp = False
+            self.chapter_range_applied = False
+
+    def toggle_detect_chapters(self, sender, app_data):
+        self.detect_chapters = app_data
+        if self.detect_chapters:
+            self.gui_updater.update_status_bar("Chapter detection enabled")
+            self.detect_chapters_in_novel()
+        else:
+            self.gui_updater.update_status_bar("Chapter detection disabled")
+            self.detected_chapters = 0
+            dpg.set_value("detected_chapters_text", "Detected Chapters: 0")
+            self.end_chapter = 999999
+            dpg.set_value("end_chapter_input", self.end_chapter)
+            self.start_chapter = 1
+            dpg.set_value("start_chapter_input", self.start_chapter)
+            self.temp_file_path = None
+            dpg.set_value("apply_to_conversion_checkbox", False)
+            self.apply_to_conversion = False
+            dpg.set_value("apply_to_hanlp_checkbox", False)
+            self.apply_to_hanlp = False
+            self.chapter_range_applied = False
+
+        dpg.configure_item("chapter_range_group", show=True)
+
+        if not self.detect_chapters:
+            dpg.set_value("start_chapter_input", 1)
+            dpg.set_value("end_chapter_input", self.end_chapter)
+
+    def update_detect_method(self, sender, app_data, user_data):
+        self.current_detect_method = str(app_data)
+        dpg.set_value("current_method", self.current_detect_method)
+        self.detect_chapters_in_novel()
+        dpg.hide_item("chapter_detection_settings_window")
+
+    def show_chapter_detection_settings(self):
+        dpg.set_value("chapter_detection_methods", self.current_detect_method)
+        dpg.set_value("current_method", self.current_detect_method)
+        dpg.show_item("chapter_detection_settings_window")
+
+    def update_start_chapter(self, sender, app_data):
+        self.start_chapter = app_data
+        self.gui_updater.update_status_bar(f"Start chapter set to {self.start_chapter}")
+        if app_data < 1:
+            dpg.set_value(sender, 1)
+
+    def update_end_chapter(self, sender, app_data):
+        self.end_chapter = app_data
+        self.gui_updater.update_status_bar(f"End chapter set to {self.end_chapter}")
+        if app_data < 1:
+            dpg.set_value(sender, 1)
+
+    def apply_chapter_range(self):
+        apply_to_conversion = dpg.get_value("apply_to_conversion_checkbox")
+        apply_to_hanlp = dpg.get_value("apply_to_hanlp_checkbox")
+
+        if not (apply_to_conversion or apply_to_hanlp):
+            show_error_dialog("Warning: Please select at least one option (Conversion or HanLP) to apply the chapter range.")
+            return
+
+        if self.start_chapter > self.end_chapter:
+            show_error_dialog("Start chapter cannot be greater than end chapter.")
+            return
+
+        self.gui_updater.update_status_bar(f"Chapter range applied: {self.start_chapter} - {self.end_chapter}")
+
+        # Create temporary file with selected chapter range
+        if self.detect_chapters:
+            temp_folder = "temp"
+            os.makedirs(temp_folder, exist_ok=True)
+            temp_file_path = os.path.join(temp_folder, f"temp_chapter_{self.start_chapter}_{self.end_chapter}.txt")
+            
+            chapters = detect_chapters(self.novel_text, self.current_detect_method)
+            if not chapters:
+                show_error_dialog("No chapters detected. Please check your chapter detection method.")
+                return
+
+            start_index = max(0, min(self.start_chapter - 1, len(chapters) - 1))
+            end_index = min(self.end_chapter, len(chapters))
+
+            start_pos = chapters[start_index][0]
+            end_pos = chapters[end_index][0] if end_index < len(chapters) else len(self.novel_text)
+
+            selected_text = self.novel_text[start_pos:end_pos]
+            
+            with open(temp_file_path, "w", encoding="utf-8") as temp_file:
+                temp_file.write(selected_text)
+            
+            self.temp_file_path = temp_file_path
+        else:
+            self.temp_file_path = None
+
+        self.apply_to_conversion = apply_to_conversion
+        self.apply_to_hanlp = apply_to_hanlp
+
+        # Notify QTBatch about the chapter range change
+        if hasattr(self, 'chapter_range_callback'):
+            self.chapter_range_callback(self.start_chapter, self.end_chapter, self.detect_chapters)
+        self.chapter_range_applied = True
+        self.gui_updater.update_status_bar(f"Chapter range applied: {self.start_chapter} - {self.end_chapter}")
+
+        # Only check/reset HanLP if "Apply to HanLP" is checked
+        if apply_to_hanlp:
+            cache_file = f"{os.path.basename(self.novel_path)}_{self.start_chapter}_{self.end_chapter}.db"
+            cache_path = os.path.join('caches', cache_file)
+
+            if os.path.exists(cache_path):
+                # Notify that a cache exists for this range
+                self.gui_updater.update_status_bar(f"HanLP cache found for chapters {self.start_chapter}-{self.end_chapter}. It will be used in the next analysis.")
+            else:
+                # Reset HanLP progress and status if no cache exists
+                self.gui_updater.update_hanlp_progress(0.0)
+                initial_status = {category: 0 for category in CATEGORY_TRANSLATION.values()}
+                self.gui_updater.update_name_analyzing_status(initial_status)
+                self.gui_updater.update_status_bar("No HanLP cache found. Progress and status reset for new analysis.")
+
+    def detect_chapters_in_novel(self):
+        if not self.novel_text:
+            self.gui_updater.update_status_bar("No novel loaded. Please load a novel first.")
+            return
+
+        try:
+            chapters = detect_chapters(self.novel_text, self.current_detect_method)
+            self.gui_updater.update_detected_chapters(len(chapters))
+            
+            self.end_chapter = len(chapters)
+            dpg.set_value("end_chapter_input", self.end_chapter)
+        except ValueError as e:
+            self.gui_updater.update_status_bar(str(e))
+
+    def load_novel(self, sender, app_data):
+        try:
+            file_path = app_data['file_path_name']
+            self.novel_text, encoding = qt.read_novel_file(file_path)
+            self.novel_path = file_path
+            self.load_novel_callback(sender, app_data)
+            if self.detect_chapters:
+                self.detect_chapters_in_novel()
+            self.update_ai_proofread_cache_percentage()
+        except Exception as e:
+            show_error_dialog(f"Error loading novel: {str(e)}")
+
+    def start_conversion(self):
+        if not self.novel_text:
+            show_error_dialog("No novel loaded. Please load a novel first.")
+            return
+        try:
+            if self.conversion_data is None:
+                show_error_dialog("Conversion data is not set. Please load the necessary data first.")
+                return
+
+            # Add this check
+            if self.ai_proofread_enabled:
+                if not self.ai_proofreader.settings["api_key"]:
+                    show_error_dialog("AI Proofread is enabled but API Key is empty. Please enter an API Key in the AI Proofread Settings.")
+                    return
+                # Here, you should call the AI proofread process
+
+            self.start_conversion_callback()
+            self.update_ai_proofread_cache_percentage()
+        except Exception as e:
+            show_error_dialog(f"Error starting conversion: {str(e)}")
+
+    def toggle_pause_conversion(self):
+        if self.conversion_paused:
+            self.resume_conversion_callback()
+            self.conversion_paused = False
+            dpg.configure_item("pause_resume_conversion_button", label="Pause Conversion")
+        else:
+            self.pause_conversion_callback()
+            self.conversion_paused = True
+            dpg.configure_item("pause_resume_conversion_button", label="Resume Conversion")
+
+    def update_max_workers(self, sender, app_data):
+        self.max_workers = app_data
+        self.set_max_workers_callback(self.max_workers)
+
+    def update_novel_status(self, *args):
+        self.gui_updater.update_novel_status(*args)
+
+    def update_novel_preview(self, *args):
+        self.gui_updater.update_novel_preview(*args)
+
+    def update_conversion_preview(self, *args):
+        self.gui_updater.update_conversion_preview(*args)
+
+    def update_conversion_status(self, status: str, color: tuple = None, ai_proofread_enabled: bool = False):
+        if ai_proofread_enabled:
+            dpg.set_value("conversion_status", status)
+        else:
+            # Extract only the "Converted" part if AI proofread is not enabled
+            converted_part = status.split(',')[0] if ',' in status else status
+            dpg.set_value("conversion_status", converted_part)
+        
+        if color:
+            dpg.configure_item("conversion_status", color=color)
+        self.update_status_bar(f"Conversion: {status}")
+
+    def update_conversion_progress(self, *args):
+        self.gui_updater.update_conversion_progress(*args)
+
+    def update_conversion_percent(self, *args):
+        self.gui_updater.update_conversion_percent(*args)
+
+    def update_conversion_percent_color(self, *args):
+        self.gui_updater.update_conversion_percent_color(*args)
+
+    def update_conversion_time(self, *args):
+        self.gui_updater.update_conversion_time(*args)
+
+    def update_hanlp_progress(self, *args):
+        self.gui_updater.update_hanlp_progress(*args)
+
+    def update_hanlp_estimated_time(self, *args):
+        self.gui_updater.update_hanlp_estimated_time(*args)
+
+    def update_name_analyzing_status(self, *args):
+        self.gui_updater.update_name_analyzing_status(*args)
+
+    def update_status_bar(self, *args):
+        self.gui_updater.update_status_bar(*args)
+
+    def update_progress_dialog(self, *args):
+        self.gui_updater.update_progress_dialog(*args)
+
+    def create_export_names2_settings_gui(self):
+        if self.export_names2_settings_gui is None:
+            self.export_names2_settings_gui = create_export_names2_settings_gui(self, self.update_export_names2_settings)
+        self.export_names2_settings_gui.show_settings_window()
+
+    def update_export_names2_settings(self, settings, name_length_range):
+        self.export_names2_settings = settings
+        self.name_length_range = name_length_range
+        self.gui_updater.update_status_bar(f"Export Names2 settings updated: {settings}, Name length range: {name_length_range}")
+
+    def toggle_ai_proofread(self, sender, app_data):
+        self.ai_proofread_enabled = app_data
+        self.gui_updater.update_status_bar(f"AI Proofread {'enabled' if self.ai_proofread_enabled else 'disabled'}")
+
+    def create_ai_proofread_settings_gui(self):
+        if self.ai_proofread_settings_gui is None:
+            self.ai_proofread_settings_gui = create_ai_proofread_settings_gui(self, self.update_ai_proofread_settings)
+        self.ai_proofread_settings_gui.show_settings_window()
+
+    def update_ai_proofread_settings(self, settings):
+        self.ai_proofreader.update_settings(settings)
+        self.gui_updater.update_status_bar("AI Proofread settings updated")
+        if self.ai_proofread_settings_gui:
+            self.ai_proofread_settings_gui.update_settings(settings)
+        
+        # Update GUI elements with new settings
+        dpg.set_value("ai_proofread_tokens", f"Tokens: {self.ai_proofreader.get_stats()['total_tokens']}")
+        dpg.set_value("ai_proofread_cost", f"Cost: ${self.ai_proofreader.get_stats()['total_cost']}")
+
+    def toggle_context_aware(self, sender, app_data):
+        self.ai_proofreader.settings["context_aware"] = app_data
+        self.gui_updater.update_status_bar(f"AI Proofread context-aware {'enabled' if app_data else 'disabled'}")
+
+    def toggle_adaptive_learning(self, sender, app_data):
+        self.ai_proofreader.settings["adaptive_learning"] = app_data
+        self.gui_updater.update_status_bar(f"AI Proofread adaptive learning {'enabled' if app_data else 'disabled'}")
+
+    def reset_ai_proofread_cache(self):
+        if self.novel_path:
+            cache_file = self.ai_proofreader.cache.get_cache_path(self.novel_path)
+            if os.path.exists(cache_file):
+                os.remove(cache_file)
+            self.ai_proofreader.clear_cache(self.novel_path)
+            self.gui_updater.update_status_bar("AI Proofread cache reset and file deleted")
+            self.update_ai_proofread_cache_percentage()
+            dpg.set_value("ai_proofread_status", "Status: Cache cleared and file deleted")
+        else:
+            self.gui_updater.update_status_bar("No novel loaded. Cannot reset cache.")
+
+    def update_ai_proofread_cache_percentage(self, percentage=None):
+        if percentage is None and hasattr(self, 'ai_proofreader') and self.novel_path:
+            percentage = self.ai_proofreader.get_cache_percentage(self.novel_path)
+        if percentage is not None:
+            dpg.set_value("ai_proofread_cache_percentage", f"Cache: {percentage:.2f}%")
+
+    def update_proofreading_progress(self, progress):
+        self.gui_updater.update_proofreading_progress(progress)
+
+    def add_log_message(self, message):
+        # Add this method to handle log messages
+        logging.info(message)
+        self.update_status_bar(message)
+
+    def update_ai_proofread_stats(self, total_tokens: int, total_cost: float):
+        self.gui_updater.update_ai_proofread_stats(total_tokens, total_cost)

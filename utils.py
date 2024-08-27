@@ -4,6 +4,8 @@ import shutil
 import logging
 from typing import Tuple, List
 import hanzidentifier
+import re
+from detect_chapters_methods import detect_chapters as detect_chapters_new, CHAPTER_MATCHERS
 
 def check_and_download_fonts(font_dir: str, fonts: List[Tuple[str, str, str]]) -> None:
     """
@@ -71,3 +73,19 @@ def detect_chinese_script(text: str) -> str:
     except Exception as e:
         logging.error(f"Error detecting Chinese script: {str(e)}")
         return "Chinese (detection failed)"
+
+def detect_chapters(novel_text: str, method: str = "Mục lục") -> List[Tuple[int, str]]:
+    """
+    Detect chapters in the novel text using the specified method.
+
+    Args:
+        novel_text (str): The input novel text.
+        method (str): The name of the detection method to use.
+
+    Returns:
+        List[Tuple[int, str]]: A list of tuples containing the line number and chapter title.
+    """
+    if method in CHAPTER_MATCHERS:
+        return CHAPTER_MATCHERS[method](novel_text)
+    else:
+        return detect_chapters_new(novel_text)

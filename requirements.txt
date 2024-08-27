@@ -1,7 +1,11 @@
 dearpygui
 hanlp
-hanzidentifier
-opencc-python-reimplemented
 pandas
+regex
+opencc
 requests
+hanzidentifier
+pyperclip
 pywinstyles
+google-generativeai
+numpy>=1.25.0,<2.0.0
