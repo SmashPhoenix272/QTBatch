@@ -43,10 +43,10 @@ class AIProofreader:
         self.cache = ProofreadCache()
         self.context = []
         self.learned_patterns = {}
-        self.input_tokens = 0
-        self.output_tokens = 0
-        self.total_tokens = 0
-        self.total_cost = 0
+        self.cumulative_input_tokens = 0
+        self.cumulative_output_tokens = 0
+        self.cumulative_total_tokens = 0
+        self.cumulative_total_cost = 0
         self.proofreading_queue = queue.Queue()
 
         # Log initialization
@@ -99,83 +99,151 @@ class AIProofreader:
         logger.info(f"No cached result found for key: {cache_key}. Proceeding with AI proofreading.")
 
         try:
-            prompt = self.settings["prompt_template"] + f"\n\n<ZH>{chinese_text}</ZH>\n<NA>{', '.join(names)}</NA>\n<VI>{sino_vietnamese_text}</VI>"
-            logger.debug(f"Generated prompt: {prompt[:200]}...")
-            
-            logger.info("Sending request to AI provider")
-            response = self.provider.generate_content(prompt)
-            
-            # Extract the content from the response
-            result = response.text
-            logger.debug(f"Raw response from AI: {result[:200]}...")
-            
-            # Extract the translated text from the <TL></TL> tags or <TL> tag
-            translated_text = None
-            # First, try to find text between <TL> and </TL> tags
-            match = re.search(r'<TL>(.*?)</TL>', result, re.DOTALL)
-            if match:
-                translated_text = match.group(1)
-                logger.info("Successfully extracted translated text from <TL></TL> tags")
-            else:
-                # If not found, try to find text after <TL> tag
-                match = re.search(r'<TL>(.*)', result, re.DOTALL)
-                if match:
-                    translated_text = match.group(1)
-                    logger.info("Successfully extracted translated text from <TL> tag")
-                else:
-                    logger.warning(f"No <TL> tags found in the response. Full response: {result}")
-            
-            if translated_text:
-                result = translated_text.strip()
-            else:
-                result = sino_vietnamese_text  # Fallback to original text if no translation is found
-            
-            # Update token counts and cost
-            usage = self.provider.get_usage_metadata(response)
-            self.input_tokens += usage["prompt_token_count"]
-            self.output_tokens += usage["candidates_token_count"]
-            self.total_tokens = usage["total_token_count"]
-            self.total_cost += self.provider.calculate_cost(usage["prompt_token_count"], usage["candidates_token_count"])
-            logger.info(f"Token usage - Input: {usage['prompt_token_count']}, Output: {usage['candidates_token_count']}, Total: {usage['total_token_count']}")
-            logger.info(f"Current total cost: {self.total_cost}")
-
-            if self.settings["adaptive_learning"]:
-                logger.info("Applying adaptive learning patterns")
-                for pattern, correction in self.learned_patterns.items():
-                    result = result.replace(pattern, correction)
-            
+            result = self._proofread_text(chinese_text, sino_vietnamese_text, names)
             logger.info(f"Caching result for key: {cache_key}")
             self.cache.cache_result(filename, chinese_text, sino_vietnamese_text, names, result)
             self.update_cache_percentage(filename)
             return result
         except Exception as e:
             logger.error(f"Error in proofread_chunk: {str(e)}", exc_info=True)
-            logger.error(f"Chinese text: '{chinese_text}'")
-            logger.error(f"Sino-Vietnamese text: '{sino_vietnamese_text}'")
-            
-            # Check if the result was actually cached despite the error
-            cached_result_after_error = self.cache.get_cached_result(filename, chinese_text, sino_vietnamese_text, names)
-            if cached_result_after_error:
-                logger.info("Result was cached despite the error. Using cached result.")
-                return cached_result_after_error
-            
-            logger.error("Failed to proofread chunk. Returning original Sino-Vietnamese text.")
+            logger.info("Splitting chunk into five parts for individual proofreading.")
+            return self._proofread_split_chunk(chinese_text, sino_vietnamese_text, names, filename)
+
+    def _proofread_split_chunk(self, chinese_text: str, sino_vietnamese_text: str, names: List[str], filename: str) -> str:
+        chinese_parts = self._split_into_parts(chinese_text, 5)
+        sino_vietnamese_parts = self._split_into_parts(sino_vietnamese_text, 5)
+
+        proofread_parts = []
+        for zh_part, vi_part in zip(chinese_parts, sino_vietnamese_parts):
+            try:
+                proofread_part = self._proofread_text(zh_part, vi_part, names)
+                proofread_parts.append(proofread_part)
+            except Exception as e:
+                logger.error(f"Error proofreading part: {str(e)}", exc_info=True)
+                logger.info("Splitting part into paragraphs for individual proofreading.")
+                proofread_part = self._proofread_paragraphs(zh_part, vi_part, names, filename)
+                proofread_parts.append(proofread_part)
+
+        result = '\n\n'.join(proofread_parts)
+        logger.info(f"Caching result for original chunk")
+        self.cache.cache_result(filename, chinese_text, sino_vietnamese_text, names, result)
+        self.update_cache_percentage(filename)
+        return result
+
+    def _split_into_parts(self, text: str, num_parts: int) -> List[str]:
+        paragraphs = text.split('\n\n')
+        total_chars = sum(len(p) for p in paragraphs)
+        chars_per_part = total_chars // num_parts
+        
+        parts = []
+        current_part = []
+        current_chars = 0
+        
+        for paragraph in paragraphs:
+            if current_chars + len(paragraph) > chars_per_part and len(parts) < num_parts - 1:
+                parts.append('\n\n'.join(current_part))
+                current_part = [paragraph]
+                current_chars = len(paragraph)
+            else:
+                current_part.append(paragraph)
+                current_chars += len(paragraph)
+        
+        if current_part:
+            parts.append('\n\n'.join(current_part))
+        
+        return parts
+
+    def _split_text(self, text: str) -> List[str]:
+        return [para.strip() for para in text.split('\n\n') if para.strip()]
+
+    def _proofread_text(self, chinese_text: str, sino_vietnamese_text: str, names: List[str]) -> str:
+        prompt = self.settings["prompt_template"] + f"\n\n<ZH>{chinese_text}</ZH>\n<NA>{', '.join(names)}</NA>\n<VI>{sino_vietnamese_text}</VI>"
+        logger.debug(f"Generated prompt: {prompt[:200]}...")
+        
+        logger.info("Sending request to AI provider")
+        response = self.provider.generate_content(prompt)
+        
+        # Log prompt feedback
+        logger.info(f"Prompt feedback: {response.prompt_feedback}")
+        
+        # Extract the content from the response
+        result = response.text
+        logger.debug(f"Raw response from AI: {result[:200]}...")
+        
+        # Extract the translated text from the <TL></TL> tags or <TL> tag
+        translated_text = None
+        # First, try to find text between <TL> and </TL> tags
+        match = re.search(r'<TL>(.*?)</TL>', result, re.DOTALL)
+        if match:
+            translated_text = match.group(1)
+            logger.info("Successfully extracted translated text from <TL></TL> tags")
+        else:
+            # If not found, try to find text after <TL> tag
+            match = re.search(r'<TL>(.*)', result, re.DOTALL)
+            if match:
+                translated_text = match.group(1)
+                logger.info("Successfully extracted translated text from <TL> tag")
+            else:
+                logger.warning(f"No <TL> tags found in the response. Full response: {result}")
+                raise ValueError("No <TL> tags found in the response")
+        
+        if translated_text:
+            result = translated_text.strip()
+        else:
+            raise ValueError("No translated text found in the response")
+        
+        # Update token counts and cost
+        usage = self.provider.get_usage_metadata(response)
+        self.update_cumulative_stats(usage)
+        logger.info(f"Token usage - Input: {usage['prompt_token_count']}, Output: {usage['candidates_token_count']}, Total: {usage['total_token_count']}")
+        logger.info(f"Current cumulative total cost: {self.cumulative_total_cost}")
+
+        if self.settings["adaptive_learning"]:
+            logger.info("Applying adaptive learning patterns")
+            for pattern, correction in self.learned_patterns.items():
+                result = result.replace(pattern, correction)
+        
+        return result
+
+    def update_cumulative_stats(self, usage: Dict[str, int]):
+        self.cumulative_input_tokens += usage["prompt_token_count"]
+        self.cumulative_output_tokens += usage["candidates_token_count"]
+        self.cumulative_total_tokens += usage["total_token_count"]
+        self.cumulative_total_cost += self.provider.calculate_cost(usage["prompt_token_count"], usage["candidates_token_count"])
+
+    def _proofread_paragraphs(self, chinese_text: str, sino_vietnamese_text: str, names: List[str], filename: str) -> str:
+        chinese_paragraphs = self._split_text(chinese_text)
+        sino_vietnamese_paragraphs = self._split_text(sino_vietnamese_text)
+        
+        if len(chinese_paragraphs) != len(sino_vietnamese_paragraphs):
+            logger.error("Mismatch in number of paragraphs between Chinese and Sino-Vietnamese text")
             return sino_vietnamese_text
+        
+        proofread_paragraphs = []
+        for zh_para, vi_para in zip(chinese_paragraphs, sino_vietnamese_paragraphs):
+            try:
+                proofread_para = self._proofread_text(zh_para, vi_para, names)
+                proofread_paragraphs.append(proofread_para)
+            except Exception as e:
+                logger.error(f"Error proofreading paragraph: {str(e)}")
+                proofread_paragraphs.append(vi_para)  # Use original text if proofreading fails
+        
+        return '\n\n'.join(proofread_paragraphs)
 
     def proofread_batch(self, chunks: List[Dict[str, Any]], names: List[str], filename: str) -> List[str]:
         logger.info(f"Proofreading batch for file: {filename}")
         logger.debug(f"Number of chunks: {len(chunks)}")
-        results = []
+        results = [None] * len(chunks)  # Pre-allocate list to maintain order
         with ThreadPoolExecutor(max_workers=self.settings["max_workers"]) as executor:
-            future_to_chunk = {executor.submit(self.proofread_chunk, chunk["chinese"], chunk["sino_vietnamese"], names, filename): chunk for chunk in chunks}
-            for future in as_completed(future_to_chunk):
-                chunk = future_to_chunk[future]
+            future_to_index = {executor.submit(self.proofread_chunk, chunk["chinese"], chunk["sino_vietnamese"], names, filename): i for i, chunk in enumerate(chunks)}
+            for future in as_completed(future_to_index):
+                index = future_to_index[future]
                 try:
                     result = future.result()
-                    results.append(result)
+                    results[index] = result
                 except Exception as e:
-                    logger.error(f"Error proofreading chunk: {str(e)}", exc_info=True)
-                    results.append(chunk["sino_vietnamese"])  # Use original text if proofreading fails
+                    logger.error(f"Error proofreading chunk {index}: {str(e)}", exc_info=True)
+                    results[index] = chunks[index]["sino_vietnamese"]  # Use original text if proofreading fails
         logger.info(f"Batch proofreading completed. Processed {len(results)} chunks.")
         return results
 
@@ -210,12 +278,12 @@ class AIProofreader:
 
     def get_stats(self) -> Dict[str, Any]:
         stats = {
-            "total_tokens": self.total_tokens,
-            "prompt_tokens": self.input_tokens,
-            "candidates_tokens": self.output_tokens,
-            "total_cost": self.total_cost,
+            "total_tokens": self.cumulative_total_tokens,
+            "prompt_tokens": self.cumulative_input_tokens,
+            "candidates_tokens": self.cumulative_output_tokens,
+            "total_cost": self.cumulative_total_cost,
         }
-        logger.info(f"Current stats: {stats}")
+        logger.info(f"Current cumulative stats: {stats}")
         return stats
 
     def get_cache_percentage(self, filename: str) -> float:
@@ -231,6 +299,6 @@ class AIProofreader:
 def load_names_from_file(file_path: str) -> List[str]:
     logger.info(f"Loading names from file: {file_path}")
     with open(file_path, 'r', encoding='utf-8') as f:
-        names = [line.strip().split('=')[1] for line in f if '=' in line]
+        names = [line.strip() for line in f if '=' in line]
     logger.debug(f"Loaded {len(names)} names")
     return names

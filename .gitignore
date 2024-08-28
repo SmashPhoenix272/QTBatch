@@ -51,3 +51,4 @@ temp/temp_chapter_10_55.txt
 providers/__pycache__/google_generativeai_sdk.cpython-310.pyc
 providers/__pycache__/vertex_ai_sdk.cpython-310.pyc
 models/__pycache__/trie.cpython-310.pyc
+__pycache__/
