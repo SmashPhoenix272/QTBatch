@@ -1,13 +1,16 @@
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google.generativeai import caching
 from typing import List, Dict, Any, Optional
 from tenacity import retry, stop_after_attempt, wait_fixed
+import datetime
 
 class GoogleGenerativeAIProvider:
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
         self.model = model
         self.configure_genai()
+        self.cached_content = None
 
     def configure_genai(self):
         genai.configure(api_key=self.api_key)
@@ -20,7 +23,8 @@ class GoogleGenerativeAIProvider:
         return {
             "prompt_token_count": response.usage_metadata.prompt_token_count,
             "candidates_token_count": response.usage_metadata.candidates_token_count,
-            "total_token_count": response.usage_metadata.total_token_count
+            "total_token_count": response.usage_metadata.total_token_count,
+            "cached_content_token_count": response.usage_metadata.cached_content_token_count if hasattr(response.usage_metadata, 'cached_content_token_count') else 0
         }
 
     def calculate_cost(self, input_tokens: int, output_tokens: int, context_length: int = 0) -> float:
@@ -47,9 +51,21 @@ class GoogleGenerativeAIProvider:
 
         return input_cost + output_cost
 
+    def create_context_cache(self, display_name: str, system_instruction: str, contents: List[Any], ttl: int = 5):
+        self.cached_content = caching.CachedContent.create(
+            model=self.model,
+            display_name=display_name,
+            system_instruction=system_instruction,
+            contents=contents,
+            ttl=datetime.timedelta(minutes=ttl)
+        )
+
     @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
     def generate_content(self, prompt: str, safety_settings: Optional[Dict] = None, generation_config: Optional[Dict] = None) -> Any:
-        model = genai.GenerativeModel(self.model)
+        if self.cached_content:
+            model = genai.GenerativeModel.from_cached_content(cached_content=self.cached_content)
+        else:
+            model = genai.GenerativeModel(self.model)
         
         if safety_settings is None:
             safety_settings = {
