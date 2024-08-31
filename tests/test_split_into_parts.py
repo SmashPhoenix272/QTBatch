@@ -3,6 +3,7 @@ import sys
 import os
 import traceback
 import time
+import re
 
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,7 +18,7 @@ except Exception as e:
     print(traceback.format_exc())
     sys.exit(1)
 
-class TestProofreadRecursive(unittest.TestCase):
+class TestSplitIntoParts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
@@ -44,80 +45,82 @@ class TestProofreadRecursive(unittest.TestCase):
             if duration > timeout:
                 print(f"Warning: {test_method.__name__} exceeded timeout of {timeout} seconds")
 
-    def test_proofread_recursive_even(self):
-        print("Running test_proofread_recursive_even")
+    def test_split_text_even(self):
+        print("Running test_split_text_even")
         chinese_text = "段落1。\n段落2。\n段落3。\n段落4。"
         sino_vietnamese_text = "Đoạn 1.\nĐoạn 2.\nĐoạn 3.\nĐoạn 4."
-        result = self.proofreader._proofread_recursive(chinese_text, sino_vietnamese_text, [], "test_file", 3)
-        print(f"Result: {result}")
-        self.assertEqual(len(result.split('\n')), 4)
-        self.assertTrue(all(part.strip() for part in result.split('\n')))  # All parts should be non-empty
+        zh_parts, vi_parts = self.proofreader.split_text(chinese_text, sino_vietnamese_text)
+        print(f"Chinese parts: {zh_parts}")
+        print(f"Sino-Vietnamese parts: {vi_parts}")
+        self.assertEqual(len(zh_parts), 2)
+        self.assertEqual(len(vi_parts), 2)
+        self.assertEqual(len(zh_parts[0].split('\n')), 2)
+        self.assertEqual(len(zh_parts[1].split('\n')), 2)
+        self.assertEqual(len(vi_parts[0].split('\n')), 2)
+        self.assertEqual(len(vi_parts[1].split('\n')), 2)
 
-    def test_proofread_recursive_empty(self):
-        print("Running test_proofread_recursive_empty")
-        chinese_text = ""
-        sino_vietnamese_text = ""
-        result = self.proofreader._proofread_recursive(chinese_text, sino_vietnamese_text, [], "test_file", 3)
-        print(f"Result: {result}")
-        self.assertEqual(result, "")
-
-    def test_proofread_recursive_uneven_paragraphs(self):
-        print("Running test_proofread_recursive_uneven_paragraphs")
+    def test_split_text_odd(self):
+        print("Running test_split_text_odd")
         chinese_text = "段落1。\n段落2。\n段落3。"
         sino_vietnamese_text = "Đoạn 1.\nĐoạn 2.\nĐoạn 3."
-        result = self.proofreader._proofread_recursive(chinese_text, sino_vietnamese_text, [], "test_file", 3)
-        print(f"Result: {result}")
-        self.assertEqual(len(result.split('\n')), 3)
-        self.assertTrue(all(part.strip() for part in result.split('\n')))  # All parts should be non-empty
+        zh_parts, vi_parts = self.proofreader.split_text(chinese_text, sino_vietnamese_text)
+        print(f"Chinese parts: {zh_parts}")
+        print(f"Sino-Vietnamese parts: {vi_parts}")
+        self.assertEqual(len(zh_parts), 2)
+        self.assertEqual(len(vi_parts), 2)
+        self.assertEqual(len(zh_parts[0].split('\n')), 1)
+        self.assertEqual(len(zh_parts[1].split('\n')), 2)
+        self.assertEqual(len(vi_parts[0].split('\n')), 1)
+        self.assertEqual(len(vi_parts[1].split('\n')), 2)
 
-    def test_proofread_recursive_chinese(self):
-        print("Running test_proofread_recursive_chinese")
-        chinese_text = "第一段。这是第一段的内容。\n第二段。这是第二段的内容。\n第三段。这是第三段的内容。"
-        sino_vietnamese_text = "Đoạn đầu tiên. Đây là nội dung của đoạn đầu tiên.\nĐoạn thứ hai. Đây là nội dung của đoạn thứ hai.\nĐoạn thứ ba. Đây là nội dung của đoạn thứ ba."
-        result = self.proofreader._proofread_recursive(chinese_text, sino_vietnamese_text, [], "test_file", 3)
-        print(f"Result: {result}")
-        self.assertEqual(len(result.split('\n')), 3)
-        self.assertTrue(all("。" in part for part in chinese_text.split('\n')))  # Each part should contain full sentences
-        self.assertTrue(all("." in part for part in result.split('\n')))  # Each part should contain full sentences
+    def test_split_text_uneven_paragraphs(self):
+        print("Running test_split_text_uneven_paragraphs")
+        chinese_text = "段落1。\n段落2。\n段落3。"
+        sino_vietnamese_text = "Đoạn 1.\nĐoạn 2.\nĐoạn 3.\nĐoạn 4."
+        zh_parts, vi_parts = self.proofreader.split_text(chinese_text, sino_vietnamese_text)
+        print(f"Chinese parts: {zh_parts}")
+        print(f"Sino-Vietnamese parts: {vi_parts}")
+        self.assertEqual(len(zh_parts), 2)
+        self.assertEqual(len(vi_parts), 2)
+        self.assertEqual(len(zh_parts[0].split('\n')), 1)
+        self.assertEqual(len(zh_parts[1].split('\n')), 2)
+        self.assertEqual(len(vi_parts[0].split('\n')), 1)
+        self.assertEqual(len(vi_parts[1].split('\n')), 2)
 
-    def test_proofread_recursive_long_text(self):
-        print("Running test_proofread_recursive_long_text")
-        chinese_text = "长段落。\n" * 100
-        sino_vietnamese_text = "Đoạn dài.\n" * 100
-        result = self.proofreader._proofread_recursive(chinese_text, sino_vietnamese_text, [], "test_file", 3)
-        print(f"Result length: {len(result)}")
-        self.assertEqual(len(result.split('\n')), 100)
-        self.assertTrue(all(part.strip() for part in result.split('\n')))  # All parts should be non-empty
+    def test_split_text_from_file(self):
+        print("Running test_split_text_from_file")
+        try:
+            with open('TestSplit.txt', 'r', encoding='utf-8') as file:
+                content = file.read()
 
-    def test_proofread_recursive_real_content(self):
-        print("Running test_proofread_recursive_real_content")
-        with open('TestSplit.txt', 'r', encoding='utf-8') as f:
-            text = f.read()
-        
-        # Split the content into Chinese and Sino-Vietnamese parts
-        zh_content = text.split('<ZH>')[1].split('</ZH>')[0].strip()
-        vi_content = text.split('<VI>')[1].split('</VI>')[0].strip()
+            zh_pattern = r'<ZH>(.*?)</ZH>'
+            vi_pattern = r'<VI>(.*?)</VI>'
 
-        # Test proofreading both Chinese and Sino-Vietnamese content
-        result = self.proofreader._proofread_recursive(zh_content, vi_content, [], "test_file", 3)
-        print(f"Result length: {len(result)}")
-        self.assertTrue(len(result) > 0)
-        self.assertTrue(all(part.strip() for part in result.split('\n')))  # All parts should be non-empty
-        print("Chinese and Sino-Vietnamese content proofread successfully")
+            zh_match = re.search(zh_pattern, content, re.DOTALL)
+            vi_match = re.search(vi_pattern, content, re.DOTALL)
 
-        # Check if the result has a similar number of paragraphs as the input
-        zh_paragraphs = zh_content.split('\n')
-        vi_paragraphs = vi_content.split('\n')
-        result_paragraphs = result.split('\n')
+            if zh_match and vi_match:
+                chinese_text = zh_match.group(1).strip()
+                sino_vietnamese_text = vi_match.group(1).strip()
 
-        print(f"Chinese content paragraphs: {len(zh_paragraphs)}")
-        print(f"Sino-Vietnamese content paragraphs: {len(vi_paragraphs)}")
-        print(f"Result paragraphs: {len(result_paragraphs)}")
+                zh_parts, vi_parts = self.proofreader.split_text(chinese_text, sino_vietnamese_text)
+                print(f"Number of Chinese parts: {len(zh_parts)}")
+                print(f"Number of Sino-Vietnamese parts: {len(vi_parts)}")
 
-        self.assertTrue(abs(len(result_paragraphs) - len(zh_paragraphs)) <= 1)
-        self.assertTrue(abs(len(result_paragraphs) - len(vi_paragraphs)) <= 1)
-        print("Result has a similar number of paragraphs as the input")
+                self.assertEqual(len(zh_parts), len(vi_parts), "Number of Chinese and Sino-Vietnamese parts should be equal")
+                self.assertGreater(len(zh_parts), 1, "There should be more than one part")
+
+                for i, (zh_part, vi_part) in enumerate(zip(zh_parts, vi_parts)):
+                    print(f"Part {i + 1}:")
+                    print(f"Chinese characters: {len(zh_part)}")
+                    print(f"Sino-Vietnamese characters: {len(vi_part)}")
+                    self.assertGreater(len(zh_part), 0, f"Chinese part {i + 1} should not be empty")
+                    self.assertGreater(len(vi_part), 0, f"Sino-Vietnamese part {i + 1} should not be empty")
+            else:
+                self.fail("Could not find ZH and VI tags in TestSplit.txt")
+        except Exception as e:
+            self.fail(f"Error in test_split_text_from_file: {str(e)}")
 
 if __name__ == '__main__':
-    test_suite = unittest.TestLoader().loadTestsFromTestCase(TestProofreadRecursive)
+    test_suite = unittest.TestLoader().loadTestsFromTestCase(TestSplitIntoParts)
     unittest.TextTestRunner(verbosity=2).run(test_suite)
