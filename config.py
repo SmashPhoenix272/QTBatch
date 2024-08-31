@@ -48,7 +48,7 @@ Kết quả:
         'gui': {
             'theme': 'Dark',
             'window_height': 800,
-            'window_width': 1000
+            'window_width': 1204
         },
         'hanlp': {
             'language': 'zh',
