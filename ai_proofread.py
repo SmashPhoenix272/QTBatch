@@ -200,88 +200,96 @@ class AIProofreader:
         max_attempts = 3
         for attempt in range(max_attempts):
             logger.info(f"Sending request to AI provider (Attempt {attempt + 1}/{max_attempts})")
-            response = self.provider.generate_content(prompt)
-            
-            # Log prompt feedback
-            logger.info(f"Prompt feedback: {response.prompt_feedback}")
-            
-            # Extract the content from the response
-            result = response.text
-            logger.debug(f"Raw response from AI: {result[:200]}...")
-            
-            # Extract the translated text from the <TL></TL> tags or <TL> tag
-            translated_text = None
-            # First, try to find text between <TL> and </TL> tags
-            match = re.search(r'<TL>(.*?)</TL>', result, re.DOTALL)
-            if match:
-                translated_text = match.group(1)
-                logger.info("Successfully extracted translated text from <TL></TL> tags")
-            else:
-                # If not found, try to find text after <TL> tag
-                match = re.search(r'<TL>(.*)', result, re.DOTALL)
+            try:
+                response = self.provider.generate_content(prompt)
+                
+                # Log prompt feedback
+                logger.info(f"Prompt feedback: {response.prompt_feedback}")
+                
+                # Check if the prompt was blocked
+                if "block" in str(response.prompt_feedback).lower():
+                    logger.error("Prompt blocked. Starting recursive splitting.")
+                    return self._proofread_split_chunk(chinese_text, sino_vietnamese_text, names, "")
+                
+                # Extract the content from the response
+                result = response.text
+                logger.debug(f"Raw response from AI: {result[:200]}...")
+                
+                # Extract the translated text from the <TL></TL> tags or <TL> tag
+                translated_text = None
+                # First, try to find text between <TL> and </TL> tags
+                match = re.search(r'<TL>(.*?)</TL>', result, re.DOTALL)
                 if match:
                     translated_text = match.group(1)
-                    logger.info("Successfully extracted translated text from <TL> tag")
+                    logger.info("Successfully extracted translated text from <TL></TL> tags")
                 else:
-                    logger.warning(f"No <TL> tags found in the response. Full response: {result}")
-                    if attempt < max_attempts - 1:
-                        logger.info(f"Retrying proofreading (Attempt {attempt + 2}/{max_attempts})")
-                        continue
+                    # If not found, try to find text after <TL> tag
+                    match = re.search(r'<TL>(.*)', result, re.DOTALL)
+                    if match:
+                        translated_text = match.group(1)
+                        logger.info("Successfully extracted translated text from <TL> tag")
                     else:
-                        logger.warning("Max attempts reached. Using Sino-Vietnamese text.")
-                        return sino_vietnamese_text
-            
-            if translated_text:
-                result = translated_text.strip()
+                        logger.warning(f"No <TL> tags found in the response. Full response: {result}")
+                        if attempt < max_attempts - 1:
+                            logger.info(f"Retrying proofreading (Attempt {attempt + 2}/{max_attempts})")
+                            continue
+                        else:
+                            logger.warning("Max attempts reached. Using Sino-Vietnamese text.")
+                            return sino_vietnamese_text
                 
-                # Check if the result is still in Chinese
-                if self._is_chinese(result):
+                if translated_text:
+                    result = translated_text.strip()
+                    
+                    # Check if the result is still in Chinese
+                    if self._is_chinese(result):
+                        if attempt < max_attempts - 1:
+                            logger.info(f"Result still in Chinese. Retrying proofreading (Attempt {attempt + 2}/{max_attempts})")
+                            continue
+                        else:
+                            logger.warning("Max attempts reached. Using Sino-Vietnamese text.")
+                            return sino_vietnamese_text
+                else:
                     if attempt < max_attempts - 1:
-                        logger.info(f"Result still in Chinese. Retrying proofreading (Attempt {attempt + 2}/{max_attempts})")
+                        logger.warning("No translated text found. Retrying.")
                         continue
                     else:
                         logger.warning("Max attempts reached. Using Sino-Vietnamese text.")
                         return sino_vietnamese_text
-            else:
+                
+                # Update token counts and cost
+                usage = self.provider.get_usage_metadata(response)
+                self.update_cumulative_stats(usage)
+                logger.info(f"Token usage - Input: {usage['prompt_token_count']}, Output: {usage['candidates_token_count']}, Total: {usage['total_token_count']}")
+                logger.info(f"Current cumulative total cost: {self.cumulative_total_cost}")
+
+                if self.settings["adaptive_learning"]:
+                    logger.info("Applying adaptive learning patterns")
+                    for pattern, correction in self.learned_patterns.items():
+                        result = result.replace(pattern, correction)
+                
+                # Update context if context_aware is enabled
+                if self.settings["context_aware"]:
+                    self.context.append({
+                        "chinese": chinese_text,
+                        "sino_vietnamese": sino_vietnamese_text,
+                        "proofread": result
+                    })
+                    if len(self.context) > 3:  # Keep only the last 3 contexts
+                        self.context.pop(0)
+                
+                return result
+            
+            except Exception as e:
+                logger.error(f"Error during content generation: {str(e)}", exc_info=True)
                 if attempt < max_attempts - 1:
-                    logger.warning("No translated text found. Retrying.")
-                    continue
+                    logger.info(f"Retrying due to error (Attempt {attempt + 2}/{max_attempts})")
                 else:
-                    logger.warning("Max attempts reached. Using Sino-Vietnamese text.")
-                    return sino_vietnamese_text
-            
-            # Update token counts and cost
-            usage = self.provider.get_usage_metadata(response)
-            self.update_cumulative_stats(usage)
-            logger.info(f"Token usage - Input: {usage['prompt_token_count']}, Output: {usage['candidates_token_count']}, Total: {usage['total_token_count']}")
-            logger.info(f"Current cumulative total cost: {self.cumulative_total_cost}")
+                    logger.warning("Max attempts reached. Starting recursive splitting.")
+                    return self._proofread_split_chunk(chinese_text, sino_vietnamese_text, names, "")
 
-            if self.settings["adaptive_learning"]:
-                logger.info("Applying adaptive learning patterns")
-                for pattern, correction in self.learned_patterns.items():
-                    result = result.replace(pattern, correction)
-            
-            # Update context if context_aware is enabled
-            if self.settings["context_aware"]:
-                self.context.append({
-                    "chinese": chinese_text,
-                    "sino_vietnamese": sino_vietnamese_text,
-                    "proofread": result
-                })
-                if len(self.context) > 3:  # Keep only the last 3 contexts
-                    self.context.pop(0)
-            
-            return result
-
-        # If we've exhausted all attempts, return the original Sino-Vietnamese text
-        logger.warning("All proofreading attempts failed. Using original Sino-Vietnamese text.")
-        return sino_vietnamese_text
-
-    def update_cumulative_stats(self, usage: Dict[str, int]):
-        self.cumulative_input_tokens += usage["prompt_token_count"]
-        self.cumulative_output_tokens += usage["candidates_token_count"]
-        self.cumulative_total_tokens += usage["total_token_count"]
-        self.cumulative_total_cost += self.provider.calculate_cost(usage["prompt_token_count"], usage["candidates_token_count"])
+        # If we've exhausted all attempts, start recursive splitting
+        logger.warning("All proofreading attempts failed. Starting recursive splitting.")
+        return self._proofread_split_chunk(chinese_text, sino_vietnamese_text, names, "")
 
     def _proofread_paragraphs(self, chinese_text: str, sino_vietnamese_text: str, names: List[str], filename: str) -> str:
         chinese_paragraphs = self._split_text(chinese_text)
@@ -384,6 +392,12 @@ class AIProofreader:
         cache_percentage = self.get_cache_percentage(filename)
         logger.info(f"Updating cache percentage for {filename}: {cache_percentage}%")
         self.main_gui.update_ai_proofread_cache_percentage(cache_percentage)
+
+    def update_cumulative_stats(self, usage: Dict[str, int]):
+        self.cumulative_input_tokens += usage["prompt_token_count"]
+        self.cumulative_output_tokens += usage["candidates_token_count"]
+        self.cumulative_total_tokens += usage["total_token_count"]
+        self.cumulative_total_cost += self.provider.calculate_cost(usage["prompt_token_count"], usage["candidates_token_count"])
 
 def load_names_from_file(file_path: str) -> List[str]:
     logger.info(f"Loading names from file: {file_path}")
