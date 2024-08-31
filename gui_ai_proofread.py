@@ -58,6 +58,10 @@ class AIProofreadSettingsGUI:
         dpg.set_value("ai_proofread_context_caching", self.settings["context_caching"])
         dpg.set_value("ai_proofread_batch_predictions", self.settings["batch_predictions"])
         dpg.set_value("prompt_template_text", self.settings["prompt_template"])
+        
+        # Update checkbox states
+        self.update_batch_predictions_state(self.settings["provider"])
+        self.update_context_caching_state(self.settings["model"])
 
     def update_provider(self, sender, app_data):
         self.settings["provider"] = app_data
@@ -65,18 +69,37 @@ class AIProofreadSettingsGUI:
             dpg.configure_item("ai_proofread_model", items=self.gemini_models)
         elif app_data == "Vertex AI":
             dpg.configure_item("ai_proofread_model", items=self.vertex_models)
+        
+        self.update_batch_predictions_state(app_data)
 
     def update_api_key(self, sender, app_data):
         self.settings["api_key"] = app_data
 
     def update_model(self, sender, app_data):
         self.settings["model"] = app_data
+        self.update_context_caching_state(app_data)
 
     def update_context_caching(self, sender, app_data):
         self.settings["context_caching"] = app_data
 
     def update_batch_predictions(self, sender, app_data):
         self.settings["batch_predictions"] = app_data
+
+    def update_batch_predictions_state(self, provider):
+        if provider == "Google GenerativeAI":
+            dpg.disable_item("ai_proofread_batch_predictions")
+            self.settings["batch_predictions"] = False
+            dpg.set_value("ai_proofread_batch_predictions", False)
+        else:
+            dpg.enable_item("ai_proofread_batch_predictions")
+
+    def update_context_caching_state(self, model):
+        if model == "gemini-1.0-pro":
+            dpg.disable_item("ai_proofread_context_caching")
+            self.settings["context_caching"] = False
+            dpg.set_value("ai_proofread_context_caching", False)
+        else:
+            dpg.enable_item("ai_proofread_context_caching")
 
     def edit_prompt_template(self):
         with dpg.window(label="Edit Prompt Template", width=500, height=300, modal=True, tag="edit_prompt_template_window"):
