@@ -195,11 +195,13 @@ class AIProofreader:
 
         context = self._get_context(chinese_text, sino_vietnamese_text) if self.settings["context_aware"] else ""
         prompt = self.settings["prompt_template"] + f"\n\n{context}<ZH>{chinese_text}</ZH>\n<NA>{', '.join(names)}</NA>\n<VI>{sino_vietnamese_text}</VI>"
-        logger.debug(f"Generated prompt: {prompt[:200]}...")
+        logger.debug(f"Generated prompt: {prompt}...")
         
         max_attempts = 3
-        for attempt in range(max_attempts):
-            logger.info(f"Sending request to AI provider (Attempt {attempt + 1}/{max_attempts})")
+        attempt = 0
+        while True:
+            attempt += 1
+            logger.info(f"Sending request to AI provider (Attempt {attempt})")
             try:
                 response = self.provider.generate_content(prompt)
                 
@@ -208,8 +210,8 @@ class AIProofreader:
                 
                 # Check if the prompt was blocked
                 if "block" in str(response.prompt_feedback).lower():
-                    logger.error("Prompt blocked. Starting recursive splitting.")
-                    return self._proofread_split_chunk(chinese_text, sino_vietnamese_text, names, "")
+                    logger.error("Prompt blocked. Retrying with the same prompt.")
+                    continue  # Try again with the same prompt
                 
                 # Extract the content from the response
                 result = response.text
@@ -230,8 +232,8 @@ class AIProofreader:
                         logger.info("Successfully extracted translated text from <TL> tag")
                     else:
                         logger.warning(f"No <TL> tags found in the response. Full response: {result}")
-                        if attempt < max_attempts - 1:
-                            logger.info(f"Retrying proofreading (Attempt {attempt + 2}/{max_attempts})")
+                        if attempt < max_attempts:
+                            logger.info(f"Retrying proofreading (Attempt {attempt + 1}/{max_attempts})")
                             continue
                         else:
                             logger.warning("Max attempts reached. Using Sino-Vietnamese text.")
@@ -242,14 +244,14 @@ class AIProofreader:
                     
                     # Check if the result is still in Chinese
                     if self._is_chinese(result):
-                        if attempt < max_attempts - 1:
-                            logger.info(f"Result still in Chinese. Retrying proofreading (Attempt {attempt + 2}/{max_attempts})")
+                        if attempt < max_attempts:
+                            logger.info(f"Result still in Chinese. Retrying proofreading (Attempt {attempt + 1}/{max_attempts})")
                             continue
                         else:
                             logger.warning("Max attempts reached. Using Sino-Vietnamese text.")
                             return sino_vietnamese_text
                 else:
-                    if attempt < max_attempts - 1:
+                    if attempt < max_attempts:
                         logger.warning("No translated text found. Retrying.")
                         continue
                     else:
@@ -281,15 +283,11 @@ class AIProofreader:
             
             except Exception as e:
                 logger.error(f"Error during content generation: {str(e)}", exc_info=True)
-                if attempt < max_attempts - 1:
-                    logger.info(f"Retrying due to error (Attempt {attempt + 2}/{max_attempts})")
+                if attempt < max_attempts:
+                    logger.info(f"Retrying due to error (Attempt {attempt + 1}/{max_attempts})")
                 else:
                     logger.warning("Max attempts reached. Starting recursive splitting.")
                     return self._proofread_split_chunk(chinese_text, sino_vietnamese_text, names, "")
-
-        # If we've exhausted all attempts, start recursive splitting
-        logger.warning("All proofreading attempts failed. Starting recursive splitting.")
-        return self._proofread_split_chunk(chinese_text, sino_vietnamese_text, names, "")
 
     def _proofread_paragraphs(self, chinese_text: str, sino_vietnamese_text: str, names: List[str], filename: str) -> str:
         chinese_paragraphs = self._split_text(chinese_text)
