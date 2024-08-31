@@ -112,10 +112,15 @@ class TestSplitIntoParts(unittest.TestCase):
 
                 for i, (zh_part, vi_part) in enumerate(zip(zh_parts, vi_parts)):
                     print(f"Part {i + 1}:")
+                    zh_paragraphs = zh_part.split('\n')
+                    vi_paragraphs = vi_part.split('\n')
                     print(f"Chinese characters: {len(zh_part)}")
+                    print(f"Chinese paragraphs: {len(zh_paragraphs)}")
                     print(f"Sino-Vietnamese characters: {len(vi_part)}")
+                    print(f"Sino-Vietnamese paragraphs: {len(vi_paragraphs)}")
                     self.assertGreater(len(zh_part), 0, f"Chinese part {i + 1} should not be empty")
                     self.assertGreater(len(vi_part), 0, f"Sino-Vietnamese part {i + 1} should not be empty")
+                    self.assertEqual(len(zh_paragraphs), len(vi_paragraphs), f"Number of paragraphs in part {i + 1} should be equal for both languages")
             else:
                 self.fail("Could not find ZH and VI tags in TestSplit.txt")
         except Exception as e:
