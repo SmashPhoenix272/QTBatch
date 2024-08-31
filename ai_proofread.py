@@ -14,7 +14,6 @@ from config import (
     AI_PROOFREAD_BATCH_PREDICTIONS,
     AI_PROOFREAD_PROMPT_TEMPLATE,
     AI_PROOFREAD_PROVIDER,
-    AI_PROOFREAD_CONTEXT_AWARE,
     AI_PROOFREAD_ADAPTIVE_LEARNING,
 )
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -37,13 +36,11 @@ class AIProofreader:
             "context_caching": AI_PROOFREAD_CONTEXT_CACHING,
             "batch_predictions": AI_PROOFREAD_BATCH_PREDICTIONS,
             "prompt_template": AI_PROOFREAD_PROMPT_TEMPLATE,
-            "context_aware": AI_PROOFREAD_CONTEXT_AWARE,
             "adaptive_learning": AI_PROOFREAD_ADAPTIVE_LEARNING,
             "provider": AI_PROOFREAD_PROVIDER,
             "max_workers": 4,  # Default number of parallel processing threads
         }
         self.cache = ProofreadCache()
-        self.context = []
         self.learned_patterns = {}
         self.cumulative_input_tokens = 0
         self.cumulative_output_tokens = 0
@@ -176,36 +173,19 @@ class AIProofreader:
         # This function checks if the text contains Chinese characters
         return bool(re.search(r'[\u4e00-\u9fff]', text))
 
-    def _get_context(self, chinese_text: str, sino_vietnamese_text: str) -> str:
-        context = ""
-        if self.context:
-            context = (
-                "Ngữ cảnh trước đó (Vui lòng xem xét khi dịch đoạn văn hiện tại trong cặp thẻ <ZH></ZH>):\n"
-                f"Tiếng Trung: {self.context[-1]['chinese']}\n"
-                f"Bản dịch Hán Việt: {self.context[-1]['sino_vietnamese']}\n"
-                f"Bản dịch đã hiệu đính: {self.context[-1]['proofread']}\n\n"
-            )
-            logger.info(f"Retrieved context: {context[:100]}...")
-        else:
-            logger.info("No previous context available")
-        return context
-
     def _proofread_text(self, chinese_text: str, sino_vietnamese_text: str, names: List[str]) -> str:
         if not chinese_text or not sino_vietnamese_text:
             logger.warning("Empty input in _proofread_text. Skipping proofreading.")
             raise ValueError("Empty input in _proofread_text")
 
-        context = self._get_context(chinese_text, sino_vietnamese_text) if self.settings["context_aware"] else ""
-        prompt = self.settings["prompt_template"] + f"\n\n{context}<ZH>{chinese_text}</ZH>\n\n<NA>{', '.join(names)}</NA>\n\n<VI>{sino_vietnamese_text}</VI>"
+        prompt = self.settings["prompt_template"] + f"\n\n<ZH>{chinese_text}</ZH>\n\n<NA>{', '.join(names)}</NA>\n\n<VI>{sino_vietnamese_text}</VI>"
         logger.debug(f"Generated prompt: {prompt[:200]}...")
-        logger.info(f"Context-aware setting: {self.settings['context_aware']}")
         
         max_attempts = 2
         for attempt in range(1, max_attempts + 1):
             logger.info(f"Sending request to AI provider (Attempt {attempt}/{max_attempts})")
             try:
-                # Include the context in the generate_content call
-                response = self.provider.generate_content(prompt, context=context if self.settings["context_aware"] else None)
+                response = self.provider.generate_content(prompt)
                 
                 # Log prompt feedback
                 logger.info(f"Prompt feedback: {response.prompt_feedback}")
@@ -257,17 +237,6 @@ class AIProofreader:
                     logger.info("Applying adaptive learning patterns")
                     for pattern, correction in self.learned_patterns.items():
                         result = result.replace(pattern, correction)
-                
-                # Update context if context_aware is enabled
-                if self.settings["context_aware"]:
-                    self.context.append({
-                        "chinese": chinese_text,
-                        "sino_vietnamese": sino_vietnamese_text,
-                        "proofread": result
-                    })
-                    if len(self.context) > 3:  # Keep only the last 3 contexts
-                        self.context.pop(0)
-                    logger.info(f"Updated context. Current context size: {len(self.context)}")
                 
                 return result
             
@@ -355,7 +324,6 @@ class AIProofreader:
     def clear_cache(self, filename: str):
         logger.info(f"Clearing cache for file: {filename}")
         self.cache.clear_cache(filename)
-        self.context = []
         self.learned_patterns = {}
         self.total_chunks = 0
         self.processed_chunks = 0
