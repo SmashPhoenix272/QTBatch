@@ -25,7 +25,7 @@ def measure_api_response_time(text: str, names2: qt.Trie, names: qt.Trie, viet_p
     end_time = time.time()
     return end_time - start_time
 
-def split_text_into_chunks(text: str, names2: qt.Trie, names: qt.Trie, viet_phrase: qt.Trie, chinese_phien_am: Dict[str, str], initial_chunk_size: int = 5500, target_response_time: float = 5.0, max_chunk_size: int = 10000) -> List[str]:
+def split_text_into_chunks(text: str, names2: qt.Trie, names: qt.Trie, viet_phrase: qt.Trie, chinese_phien_am: Dict[str, str], initial_chunk_size: int = 2500, target_response_time: float = 5.0, max_chunk_size: int = 10000) -> List[str]:
     chunks = []
     current_chunk = ""
     chunk_size = initial_chunk_size

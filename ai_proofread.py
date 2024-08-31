@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Tuple
 import os
 import yaml
 import logging
@@ -124,12 +124,8 @@ class AIProofreader:
             result = sino_vietnamese_text
         return result
 
-    def _proofread_recursive(self, chinese_text: str, sino_vietnamese_text: str, names: List[str], filename: str, remaining_splits: int) -> str:
-        if remaining_splits == 0:
-            logger.info("Reached maximum split depth. Proofreading paragraphs individually.")
-            return self._proofread_paragraphs(chinese_text, sino_vietnamese_text, names, filename)
-
-        logger.info(f"Splitting text. Remaining splits: {remaining_splits}")
+    def split_text(self, chinese_text: str, sino_vietnamese_text: str) -> Tuple[List[str], List[str]]:
+        logger.info("Splitting text into parts")
         
         # Split text into paragraphs
         zh_paragraphs = chinese_text.split('\n')
@@ -148,6 +144,17 @@ class AIProofreader:
         # Split the paragraphs
         zh_parts = ['\n'.join(zh_paragraphs[:paragraphs_per_part]), '\n'.join(zh_paragraphs[paragraphs_per_part:])]
         vi_parts = ['\n'.join(vi_paragraphs[:paragraphs_per_part]), '\n'.join(vi_paragraphs[paragraphs_per_part:])]
+
+        return zh_parts, vi_parts
+
+    def _proofread_recursive(self, chinese_text: str, sino_vietnamese_text: str, names: List[str], filename: str, remaining_splits: int) -> str:
+        if remaining_splits == 0:
+            logger.info("Reached maximum split depth. Proofreading paragraphs individually.")
+            return self._proofread_paragraphs(chinese_text, sino_vietnamese_text, names, filename)
+
+        logger.info(f"Splitting text. Remaining splits: {remaining_splits}")
+        
+        zh_parts, vi_parts = self.split_text(chinese_text, sino_vietnamese_text)
 
         proofread_parts = []
         for zh_part, vi_part in zip(zh_parts, vi_parts):
@@ -182,8 +189,8 @@ class AIProofreader:
             raise ValueError("Empty input in _proofread_text")
 
         context = self._get_context(chinese_text, sino_vietnamese_text) if self.settings["context_aware"] else ""
-        prompt = self.settings["prompt_template"] + f"\n\n{context}<ZH>{chinese_text}</ZH>\n<NA>{', '.join(names)}</NA>\n<VI>{sino_vietnamese_text}</VI>"
-        logger.debug(f"Generated prompt: {prompt}...")
+        prompt = self.settings["prompt_template"] + f"\n\n{context}<ZH>{chinese_text}</ZH>\n\n<NA>{', '.join(names)}</NA>\n\n<VI>{sino_vietnamese_text}</VI>"
+        logger.debug(f"Generated prompt: {prompt[:200]}...")
         
         max_attempts = 2
         for attempt in range(1, max_attempts + 1):
