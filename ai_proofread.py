@@ -45,6 +45,7 @@ class AIProofreader:
         self.cumulative_input_tokens = 0
         self.cumulative_output_tokens = 0
         self.cumulative_total_tokens = 0
+        self.cumulative_cache_tokens = 0
         self.cumulative_total_cost = 0
         self.proofreading_queue = queue.Queue()
         self.total_chunks = 0
@@ -230,13 +231,18 @@ class AIProofreader:
                 # Update token counts and cost
                 usage = self.provider.get_usage_metadata(response)
                 self.update_cumulative_stats(usage)
-                logger.info(f"Token usage - Input: {usage['prompt_token_count']}, Output: {usage['candidates_token_count']}, Total: {usage['total_token_count']}")
+                logger.info(f"Token usage - Input: {usage['prompt_token_count']}, Output: {usage['candidates_token_count']}, Total: {usage['total_token_count']}, Cached: {usage['cached_content_token_count']}")
                 logger.info(f"Current cumulative total cost: {self.cumulative_total_cost}")
 
                 if self.settings["adaptive_learning"]:
                     logger.info("Applying adaptive learning patterns")
                     for pattern, correction in self.learned_patterns.items():
                         result = result.replace(pattern, correction)
+                
+                # Update context cache with the new translated text
+                if self.settings["context_caching"] and isinstance(self.provider, GoogleGenerativeAIProvider):
+                    logger.info("Updating context cache with new translated text")
+                    self.provider.update_context_cache(result)
                 
                 return result
             
@@ -334,6 +340,7 @@ class AIProofreader:
             "total_tokens": self.cumulative_total_tokens,
             "prompt_tokens": self.cumulative_input_tokens,
             "candidates_tokens": self.cumulative_output_tokens,
+            "cache_tokens": self.cumulative_cache_tokens,
             "total_cost": self.cumulative_total_cost,
         }
         logger.info(f"Current cumulative stats: {stats}")
@@ -355,7 +362,15 @@ class AIProofreader:
         self.cumulative_input_tokens += usage["prompt_token_count"]
         self.cumulative_output_tokens += usage["candidates_token_count"]
         self.cumulative_total_tokens += usage["total_token_count"]
-        self.cumulative_total_cost += self.provider.calculate_cost(usage["prompt_token_count"], usage["candidates_token_count"])
+        self.cumulative_cache_tokens += usage["cached_content_token_count"]
+        
+        context_length = usage["prompt_token_count"] + usage["cached_content_token_count"]
+        self.cumulative_total_cost += self.provider.calculate_cost(
+            usage["prompt_token_count"],
+            usage["candidates_token_count"],
+            context_length,
+            usage["cached_content_token_count"]
+        )
 
 def load_names_from_file(file_path: str) -> List[str]:
     logger.info(f"Loading names from file: {file_path}")

@@ -9,8 +9,6 @@ class AIProofreadSettingsGUI:
         self.providers = ["Google GenerativeAI", "Vertex AI"]
         self.gemini_models = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"]
         self.vertex_models = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"]  # Add Vertex AI models here
-        self.settings["context_aware"] = False
-        self.settings["adaptive_learning"] = False
         self.settings["provider"] = "Google GenerativeAI"  # Default provider
 
     def create_settings_window(self):
@@ -32,9 +30,6 @@ class AIProofreadSettingsGUI:
                         dpg.add_checkbox(label="Batch Predictions", default_value=self.settings["batch_predictions"], 
                                         callback=self.update_batch_predictions, tag="ai_proofread_batch_predictions")
                 with dpg.table_row():
-                    with dpg.group():
-                        dpg.add_checkbox(label="Context-Aware", default_value=self.settings["context_aware"], 
-                                        callback=self.update_context_aware, tag="ai_proofread_context_aware")
                     with dpg.group():
                         dpg.add_checkbox(label="Adaptive Learning", default_value=self.settings["adaptive_learning"], 
                                         callback=self.update_adaptive_learning, tag="ai_proofread_adaptive_learning")
@@ -101,9 +96,6 @@ class AIProofreadSettingsGUI:
     def update_settings(self, new_settings):
         self.settings = new_settings.copy()  # Create a copy of the new settings
         self.refresh_settings()
-
-    def update_context_aware(self, sender, app_data):
-        self.settings["context_aware"] = app_data
 
     def update_adaptive_learning(self, sender, app_data):
         self.settings["adaptive_learning"] = app_data

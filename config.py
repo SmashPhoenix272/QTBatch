@@ -7,7 +7,6 @@ def create_default_config():
             'adaptive_learning': False,
             'api_key': '',
             'batch_predictions': False,
-            'context_aware': False,
             'context_caching': False,
             'max_workers': 4,
             'model': 'gemini-1.5-flash',
@@ -110,6 +109,5 @@ AI_PROOFREAD_CONTEXT_CACHING = AI_PROOFREAD_CONFIG.get('context_caching', True)
 AI_PROOFREAD_BATCH_PREDICTIONS = AI_PROOFREAD_CONFIG.get('batch_predictions', True)
 AI_PROOFREAD_PROMPT_TEMPLATE = AI_PROOFREAD_CONFIG.get('prompt_template', 'Your default prompt template here')
 AI_PROOFREAD_PROVIDER = AI_PROOFREAD_CONFIG.get('provider', 'Google GenerativeAI')
-AI_PROOFREAD_CONTEXT_AWARE = AI_PROOFREAD_CONFIG.get('context_aware', True)
 AI_PROOFREAD_ADAPTIVE_LEARNING = AI_PROOFREAD_CONFIG.get('adaptive_learning', True)
 AI_PROOFREAD_MAX_WORKERS = AI_PROOFREAD_CONFIG.get('max_workers', 4)

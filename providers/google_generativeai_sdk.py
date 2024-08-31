@@ -27,29 +27,39 @@ class GoogleGenerativeAIProvider:
             "cached_content_token_count": response.usage_metadata.cached_content_token_count if hasattr(response.usage_metadata, 'cached_content_token_count') else 0
         }
 
-    def calculate_cost(self, input_tokens: int, output_tokens: int, context_length: int = 0) -> float:
+    def calculate_cost(self, input_tokens: int, output_tokens: int, context_length: int = 0, cache_tokens: int = 0) -> float:
         input_cost = 0
         output_cost = 0
+        cache_cost = 0
 
         if self.model == "gemini-1.5-flash":
             if context_length <= 128000:
-                input_cost = input_tokens * 0.00001875 / 1000
-                output_cost = output_tokens * 0.000075 / 1000
+                input_cost = input_tokens * 0.000075 / 1000000
+                output_cost = output_tokens * 0.00030 / 1000000
+                cache_cost = cache_tokens * 0.00001875 / 1000000
             else:
-                input_cost = input_tokens * 0.0000375 / 1000
-                output_cost = output_tokens * 0.00015 / 1000
+                input_cost = input_tokens * 0.00015 / 1000000
+                output_cost = output_tokens * 0.00060 / 1000000
+                cache_cost = cache_tokens * 0.0000375 / 1000000
+            # Add storage cost for context caching
+            cache_cost += cache_tokens * 0.000001 / 1000000  # $1.00 per million tokens per hour
         elif self.model == "gemini-1.5-pro":
             if context_length <= 128000:
-                input_cost = input_tokens * 0.00125 / 1000
-                output_cost = output_tokens * 0.00375 / 1000
+                input_cost = input_tokens * 0.00350 / 1000000
+                output_cost = output_tokens * 0.01050 / 1000000
+                cache_cost = cache_tokens * 0.000875 / 1000000
             else:
-                input_cost = input_tokens * 0.0025 / 1000
-                output_cost = output_tokens * 0.0075 / 1000
+                input_cost = input_tokens * 0.00700 / 1000000
+                output_cost = output_tokens * 0.02100 / 1000000
+                cache_cost = cache_tokens * 0.00175 / 1000000
+            # Add storage cost for context caching
+            cache_cost += cache_tokens * 0.0000045 / 1000000  # $4.50 per million tokens per hour
         elif self.model == "gemini-1.0-pro":
-            input_cost = input_tokens * 0.000125 / 1000
-            output_cost = output_tokens * 0.000375 / 1000
+            input_cost = input_tokens * 0.00050 / 1000000
+            output_cost = output_tokens * 0.00150 / 1000000
+            # Context caching not available for Gemini 1.0 Pro
 
-        return input_cost + output_cost
+        return input_cost + output_cost + cache_cost
 
     def create_context_cache(self, display_name: str, system_instruction: str, contents: List[Any], ttl: int = 5):
         self.cached_content = caching.CachedContent.create(
@@ -89,3 +99,11 @@ class GoogleGenerativeAIProvider:
         )
 
         return response
+
+    def update_context_cache(self, translated_text: str):
+        self.create_context_cache(
+            display_name="Proofreading Context",
+            system_instruction="You are an expert in proofreading Sino-Vietnamese translations. Use the provided context to improve your proofreading results.",
+            contents=[translated_text],
+            ttl=10  # Cache for 10 minutes
+        )

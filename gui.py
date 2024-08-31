@@ -697,10 +697,6 @@ class GUI:
         dpg.set_value("ai_proofread_tokens", f"Tokens: {self.ai_proofreader.get_stats()['total_tokens']}")
         dpg.set_value("ai_proofread_cost", f"Cost: ${self.ai_proofreader.get_stats()['total_cost']}")
 
-    def toggle_context_aware(self, sender, app_data):
-        self.ai_proofreader.settings["context_aware"] = app_data
-        self.gui_updater.update_status_bar(f"AI Proofread context-aware {'enabled' if app_data else 'disabled'}")
-
     def toggle_adaptive_learning(self, sender, app_data):
         self.ai_proofreader.settings["adaptive_learning"] = app_data
         self.gui_updater.update_status_bar(f"AI Proofread adaptive learning {'enabled' if app_data else 'disabled'}")
