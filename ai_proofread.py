@@ -51,10 +51,8 @@ class AIProofreader:
         self.total_chunks = 0
         self.processed_chunks = 0
 
-        # Log initialization
         logger.info("Initializing AIProofreader")
 
-        # Create provider after logger is initialized
         self.provider = self.create_provider()
 
     def create_provider(self):
@@ -110,9 +108,6 @@ class AIProofreader:
             if result:  # Check if the result is not empty
                 logger.info(f"Caching result for key: {cache_key}")
                 self.cache.cache_result(filename, chinese_text, sino_vietnamese_text, names, result)
-            else:
-                logger.warning("Empty proofread result. Using original Sino-Vietnamese text.")
-                result = sino_vietnamese_text
             return result
         except Exception as e:
             logger.error(f"Error in proofread_chunk: {str(e)}", exc_info=True)
@@ -134,44 +129,37 @@ class AIProofreader:
             logger.info("Reached maximum split depth. Proofreading paragraphs individually.")
             return self._proofread_paragraphs(chinese_text, sino_vietnamese_text, names, filename)
 
-        try:
-            return self._proofread_text(chinese_text, sino_vietnamese_text, names)
-        except Exception as e:
-            logger.error(f"Error in recursive proofreading: {str(e)}", exc_info=True)
-            logger.info(f"Splitting text in half. Remaining splits: {remaining_splits-1}")
+        logger.info(f"Splitting text. Remaining splits: {remaining_splits}")
+        
+        # Split text into paragraphs
+        zh_paragraphs = chinese_text.split('\n')
+        vi_paragraphs = sino_vietnamese_text.split('\n')
 
-            zh_parts = self._split_into_parts(chinese_text, 2)
-            vi_parts = self._split_into_parts(sino_vietnamese_text, 2)
+        # Ensure both texts have the same number of paragraphs
+        if len(zh_paragraphs) != len(vi_paragraphs):
+            logger.warning("Mismatch in number of paragraphs between Chinese and Sino-Vietnamese text. Adjusting...")
+            min_paragraphs = min(len(zh_paragraphs), len(vi_paragraphs))
+            zh_paragraphs = zh_paragraphs[:min_paragraphs]
+            vi_paragraphs = vi_paragraphs[:min_paragraphs]
 
-            proofread_parts = []
-            for zh_part, vi_part in zip(zh_parts, vi_parts):
-                proofread_part = self._proofread_recursive(zh_part, vi_part, names, filename, remaining_splits-1)
+        # Calculate the number of paragraphs for each part
+        paragraphs_per_part = len(zh_paragraphs) // 2
+        
+        # Split the paragraphs
+        zh_parts = ['\n'.join(zh_paragraphs[:paragraphs_per_part]), '\n'.join(zh_paragraphs[paragraphs_per_part:])]
+        vi_parts = ['\n'.join(vi_paragraphs[:paragraphs_per_part]), '\n'.join(vi_paragraphs[paragraphs_per_part:])]
+
+        proofread_parts = []
+        for zh_part, vi_part in zip(zh_parts, vi_parts):
+            try:
+                proofread_part = self._proofread_text(zh_part, vi_part, names)
+                proofread_parts.append(proofread_part)
+            except Exception as e:
+                logger.error(f"Error in recursive proofreading: {str(e)}", exc_info=True)
+                proofread_part = self._proofread_recursive(zh_part, vi_part, names, filename, remaining_splits - 1)
                 proofread_parts.append(proofread_part)
 
-            return '\n\n'.join(proofread_parts)
-
-    def _split_into_parts(self, text: str, num_parts: int) -> List[str]:
-        paragraphs = text.split('\n\n')
-        total_paragraphs = len(paragraphs)
-        paragraphs_per_part = max(1, total_paragraphs // num_parts)
-        
-        parts = []
-        for i in range(0, total_paragraphs, paragraphs_per_part):
-            part = paragraphs[i:i + paragraphs_per_part]
-            parts.append('\n\n'.join(part))
-        
-        # If we have fewer parts than requested, duplicate the last part
-        while len(parts) < num_parts:
-            parts.append(parts[-1])
-        
-        # If we have more parts than requested, combine the last parts
-        if len(parts) > num_parts:
-            parts[num_parts-1:] = ['\n\n'.join(parts[num_parts-1:])]
-        
-        return parts
-
-    def _split_text(self, text: str) -> List[str]:
-        return [para.strip() for para in text.split('\n\n') if para.strip()]
+        return '\n'.join(proofread_parts)
 
     def _is_chinese(self, text: str) -> bool:
         # This function checks if the text contains Chinese characters
@@ -191,17 +179,15 @@ class AIProofreader:
     def _proofread_text(self, chinese_text: str, sino_vietnamese_text: str, names: List[str]) -> str:
         if not chinese_text or not sino_vietnamese_text:
             logger.warning("Empty input in _proofread_text. Skipping proofreading.")
-            return sino_vietnamese_text
+            raise ValueError("Empty input in _proofread_text")
 
         context = self._get_context(chinese_text, sino_vietnamese_text) if self.settings["context_aware"] else ""
         prompt = self.settings["prompt_template"] + f"\n\n{context}<ZH>{chinese_text}</ZH>\n<NA>{', '.join(names)}</NA>\n<VI>{sino_vietnamese_text}</VI>"
         logger.debug(f"Generated prompt: {prompt}...")
         
-        max_attempts = 3
-        attempt = 0
-        while True:
-            attempt += 1
-            logger.info(f"Sending request to AI provider (Attempt {attempt})")
+        max_attempts = 2
+        for attempt in range(1, max_attempts + 1):
+            logger.info(f"Sending request to AI provider (Attempt {attempt}/{max_attempts})")
             try:
                 response = self.provider.generate_content(prompt)
                 
@@ -232,31 +218,18 @@ class AIProofreader:
                         logger.info("Successfully extracted translated text from <TL> tag")
                     else:
                         logger.warning(f"No <TL> tags found in the response. Full response: {result}")
-                        if attempt < max_attempts:
-                            logger.info(f"Retrying proofreading (Attempt {attempt + 1}/{max_attempts})")
-                            continue
-                        else:
-                            logger.warning("Max attempts reached. Using Sino-Vietnamese text.")
-                            return sino_vietnamese_text
+                        continue  # Try again
                 
                 if translated_text:
                     result = translated_text.strip()
                     
                     # Check if the result is still in Chinese
                     if self._is_chinese(result):
-                        if attempt < max_attempts:
-                            logger.info(f"Result still in Chinese. Retrying proofreading (Attempt {attempt + 1}/{max_attempts})")
-                            continue
-                        else:
-                            logger.warning("Max attempts reached. Using Sino-Vietnamese text.")
-                            return sino_vietnamese_text
+                        logger.warning("Result still in Chinese. Retrying.")
+                        continue  # Try again
                 else:
-                    if attempt < max_attempts:
-                        logger.warning("No translated text found. Retrying.")
-                        continue
-                    else:
-                        logger.warning("Max attempts reached. Using Sino-Vietnamese text.")
-                        return sino_vietnamese_text
+                    logger.warning("No translated text found. Retrying.")
+                    continue  # Try again
                 
                 # Update token counts and cost
                 usage = self.provider.get_usage_metadata(response)
@@ -284,14 +257,16 @@ class AIProofreader:
             except Exception as e:
                 logger.error(f"Error during content generation: {str(e)}", exc_info=True)
                 if attempt < max_attempts:
-                    logger.info(f"Retrying due to error (Attempt {attempt + 1}/{max_attempts})")
+                    logger.info(f"Retrying due to error (Attempt {attempt}/{max_attempts})")
                 else:
-                    logger.warning("Max attempts reached. Starting recursive splitting.")
-                    return self._proofread_split_chunk(chinese_text, sino_vietnamese_text, names, "")
+                    logger.warning("Max attempts reached. Raising exception.")
+                    raise
+
+        raise Exception("Max attempts reached in _proofread_text without successful result")
 
     def _proofread_paragraphs(self, chinese_text: str, sino_vietnamese_text: str, names: List[str], filename: str) -> str:
-        chinese_paragraphs = self._split_text(chinese_text)
-        sino_vietnamese_paragraphs = self._split_text(sino_vietnamese_text)
+        chinese_paragraphs = chinese_text.split('\n')
+        sino_vietnamese_paragraphs = sino_vietnamese_text.split('\n')
         
         if len(chinese_paragraphs) != len(sino_vietnamese_paragraphs):
             logger.error("Mismatch in number of paragraphs between Chinese and Sino-Vietnamese text")
@@ -310,7 +285,7 @@ class AIProofreader:
                 logger.error(f"Error proofreading paragraph: {str(e)}")
                 proofread_paragraphs.append(vi_para)  # Use original text if proofreading fails
         
-        return '\n\n'.join(proofread_paragraphs)
+        return '\n'.join(proofread_paragraphs)
 
     def proofread_batch(self, chunks: List[Dict[str, Any]], names: List[str], filename: str) -> List[str]:
         logger.info(f"Proofreading batch for file: {filename}")
