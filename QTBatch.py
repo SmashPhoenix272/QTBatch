@@ -6,6 +6,8 @@ import logging
 import opencc
 import queue
 from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict
+from typing import Tuple, List, Dict
 import statistics
 
 import QuickTranslator as qt
@@ -25,11 +27,12 @@ def measure_api_response_time(text: str, names2: qt.Trie, names: qt.Trie, viet_p
     end_time = time.time()
     return end_time - start_time
 
-def split_text_into_chunks(text: str, names2: qt.Trie, names: qt.Trie, viet_phrase: qt.Trie, chinese_phien_am: Dict[str, str], initial_chunk_size: int = 7500, target_response_time: float = 5.0, max_chunk_size: int = 10000) -> List[str]:
+def split_text_into_chunks(text: str, names2: qt.Trie, names: qt.Trie, viet_phrase: qt.Trie, chinese_phien_am: Dict[str, str], initial_chunk_size: int = 7500, target_response_time: float = 5.0, max_chunk_size: int = 10000) -> Tuple[List[str], OrderedDict]:
     chunks = []
     current_chunk = ""
     chunk_size = initial_chunk_size
     response_times = []
+    futures = OrderedDict()
 
     for paragraph in text.split('\n'):
         if len(current_chunk) + len(paragraph) + 1 > chunk_size:
@@ -53,7 +56,7 @@ def split_text_into_chunks(text: str, names2: qt.Trie, names: qt.Trie, viet_phra
     if current_chunk:
         chunks.append(current_chunk)
 
-    return chunks
+    return chunks, futures
 
 class QuickTranslatorGUI:
     def __init__(self):
@@ -278,10 +281,9 @@ class QuickTranslatorGUI:
         print(f"Running conversion (detect_chapters_enabled={detect_chapters_enabled}, apply_to_conversion={apply_to_conversion}, chapter_range_applied={chapter_range_applied}, start_chapter={start_chapter}, end_chapter={end_chapter}, export_filename={export_filename})...")
         start_time = time.time()
         try:
-            chunks = split_text_into_chunks(text_to_convert, self.names2, self.names, self.viet_phrase, self.chinese_phien_am)
+            chunks, futures = split_text_into_chunks(text_to_convert, self.names2, self.names, self.viet_phrase, self.chinese_phien_am)
             total_chunks = len(chunks)
-            converted_chunks = queue.Queue()
-            proofread_chunks = queue.Queue()
+            converted_chunks = OrderedDict()
 
             def update_progress_and_status(conversion_progress, proofreading_progress, message):
                 self.gui_update_queue.put(lambda: dpg.set_value("conversion_progress", conversion_progress))
@@ -322,83 +324,70 @@ class QuickTranslatorGUI:
                         None,
                         self.update_ai_proofread_cache_percentage
                     )
-                    converted_chunks.put((chunk_index, converted_chunk))
+                    return chunk_index, converted_chunk
                 except Exception as e:
                     logging.error(f"Error converting chunk {chunk_index}: {str(e)}")
                     self.gui_update_queue.put(lambda: self.gui.add_log_message(f"Error converting chunk {chunk_index}: {str(e)}"))
-                    converted_chunks.put((chunk_index, None))  # Put None to indicate error
+                    return chunk_index, None  # Return None to indicate error
 
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 for i, chunk in enumerate(chunks):
-                    executor.submit(convert_chunk, i, chunk)
+                    futures[i] = executor.submit(convert_chunk, i, chunk)
 
             output_path = os.path.join(os.path.dirname(self.novel_path), export_filename)
             with open(output_path, 'w', encoding='utf-8') as f:
                 converted_count = 0
                 proofread_count = 0
-                chunks_to_write = {}
-                next_chunk_to_write = 0
 
-                while not self.stop_conversion:
-                    try:
-                        chunk_index, converted_chunk = converted_chunks.get(timeout=1)
-                        if converted_chunk is None:
-                            # Handle error in chunk conversion
-                            self.gui_update_queue.put(lambda: self.gui.add_log_message(f"Skipping chunk {chunk_index} due to conversion error"))
-                            continue
-                        converted_count += 1
-                        conversion_progress = converted_count / total_chunks
-                        proofreading_progress = proofread_count / total_chunks
-                        message = f"Converted: {converted_count}/{total_chunks}, Proofread: {proofread_count}/{total_chunks}"
-                        self.gui_update_queue.put(lambda: update_progress_and_status(conversion_progress, proofreading_progress, message))
-                        
-                        if self.gui.ai_proofread_enabled:
-                            try:
-                                self.gui_update_queue.put(lambda: self.gui.update_status_bar(f"AI Proofreading chunk {chunk_index + 1}/{total_chunks}..."))
-                                names = load_names_from_file('Names2.txt')
-                                
-                                # Check if the chunk is in the cache
-                                cache_key = self.ai_proofreader.cache.get_cache_key(chunks[chunk_index], converted_chunk, names)
-                                cached_result = self.ai_proofreader.cache.get_cached_result(os.path.basename(self.novel_path), chunks[chunk_index], converted_chunk, names)
-                                
-                                if cached_result:
-                                    logging.info(f"Using cached result for chunk {chunk_index + 1}")
-                                    proofread_chunk = cached_result
-                                else:
-                                    logging.info(f"Proofreading chunk {chunk_index + 1}")
-                                    proofread_chunk = self.ai_proofreader.proofread_chunk(chunks[chunk_index], converted_chunk, names, os.path.basename(self.novel_path))
-                                
-                                chunks_to_write[chunk_index] = proofread_chunk
-                                proofread_count += 1
-                                
-                                # Update cache percentage
-                                self.update_ai_proofread_cache_percentage()
-                            except Exception as e:
-                                logging.error(f"Error during AI proofreading: {str(e)}")
-                                self.gui_update_queue.put(lambda: self.gui.add_log_message(f"Error during AI proofreading: {str(e)}"))
-                                chunks_to_write[chunk_index] = converted_chunk  # Use the non-proofread chunk in case of error
-                                proofread_count += 1
-                        else:
-                            chunks_to_write[chunk_index] = converted_chunk
+                for chunk_index, future in futures.items():
+                    if self.stop_conversion:
+                        break
+
+                    chunk_index, converted_chunk = future.result()
+                    if converted_chunk is None:
+                        # Handle error in chunk conversion
+                        self.gui_update_queue.put(lambda: self.gui.add_log_message(f"Skipping chunk {chunk_index} due to conversion error"))
+                        continue
+
+                    converted_count += 1
+                    conversion_progress = converted_count / total_chunks
+                    proofreading_progress = proofread_count / total_chunks
+                    message = f"Converted: {converted_count}/{total_chunks}, Proofread: {proofread_count}/{total_chunks}"
+                    self.gui_update_queue.put(lambda: update_progress_and_status(conversion_progress, proofreading_progress, message))
+
+                    if self.gui.ai_proofread_enabled:
+                        try:
+                            self.gui_update_queue.put(lambda: self.gui.update_status_bar(f"AI Proofreading chunk {chunk_index + 1}/{total_chunks}..."))
+                            names = load_names_from_file('Names2.txt')
+                            
+                            # Check if the chunk is in the cache
+                            cache_key = self.ai_proofreader.cache.get_cache_key(chunks[chunk_index], converted_chunk, names)
+                            cached_result = self.ai_proofreader.cache.get_cached_result(os.path.basename(self.novel_path), chunks[chunk_index], converted_chunk, names)
+                            
+                            if cached_result:
+                                logging.info(f"Using cached result for chunk {chunk_index + 1}")
+                                proofread_chunk = cached_result
+                            else:
+                                logging.info(f"Proofreading chunk {chunk_index + 1}")
+                                proofread_chunk = self.ai_proofreader.proofread_chunk(chunks[chunk_index], converted_chunk, names, os.path.basename(self.novel_path))
+                            
+                            f.write(proofread_chunk)
                             proofread_count += 1
-                        
-                        # Write chunks in order
-                        while next_chunk_to_write in chunks_to_write:
-                            f.write(chunks_to_write[next_chunk_to_write])
-                            del chunks_to_write[next_chunk_to_write]
-                            next_chunk_to_write += 1
-                        
-                        proofreading_progress = proofread_count / total_chunks
-                        message = f"Converted: {converted_count}/{total_chunks}, Proofread: {proofread_count}/{total_chunks}"
-                        self.gui_update_queue.put(lambda: update_progress_and_status(conversion_progress, proofreading_progress, message))
-                    except queue.Empty:
-                        if converted_chunks.empty() and proofread_count == total_chunks:
-                            break
+                            
+                            # Update cache percentage
+                            self.update_ai_proofread_cache_percentage()
+                        except Exception as e:
+                            logging.error(f"Error during AI proofreading: {str(e)}")
+                            self.gui_update_queue.put(lambda: self.gui.add_log_message(f"Error during AI proofreading: {str(e)}"))
+                            f.write(converted_chunk)  # Use the non-proofread chunk in case of error
+                            proofread_count += 1
+                    else:
+                        f.write(converted_chunk)
+                        proofread_count += 1
 
-                # Write any remaining chunks
-                for i in range(next_chunk_to_write, total_chunks):
-                    if i in chunks_to_write:
-                        f.write(chunks_to_write[i])
+                    proofreading_progress = proofread_count / total_chunks
+                    message = f"Converted: {converted_count}/{total_chunks}, Proofread: {proofread_count}/{total_chunks}"
+                    self.gui_update_queue.put(lambda: update_progress_and_status(conversion_progress, proofreading_progress, message))
 
             if not self.stop_conversion:
                 end_time = time.time()
