@@ -9,7 +9,7 @@ def create_default_config():
             'batch_predictions': False,
             'context_caching': False,
             'max_workers': 4,
-            'model': 'gemini-1.5-flash',
+            'model': 'gemini-1.5-flash-001',
             'prompt_template': '''Vai trò: Bạn là một dịch giả chuyên nghiệp, xuất sắc trong việc dịch từ tiếng Trung sang tiếng Việt.
 
 Kỹ năng 1: Phiên dịch từ tiếng Trung sang tiếng Việt

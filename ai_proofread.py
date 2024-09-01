@@ -58,8 +58,9 @@ class AIProofreader:
 
     def create_provider(self):
         logger.info(f"Creating provider: {self.settings['provider']}")
+        logger.info(f"Model: {self.settings['model']}")
         if self.settings["provider"] == "Google GenerativeAI":
-            return GoogleGenerativeAIProvider(self.settings["api_key"], self.settings["model"])
+            return GoogleGenerativeAIProvider(self.settings["api_key"], self.settings["model"], self.settings["context_caching"])
         elif self.settings["provider"] == "Vertex AI":
             return VertexAIProvider(self.settings["api_key"], "us-central1", self.settings["model"])
         else:
@@ -69,6 +70,8 @@ class AIProofreader:
         logger.info(f"Updating settings: {new_settings}")
         self.settings.update(new_settings)
         self.provider = self.create_provider()
+        if isinstance(self.provider, GoogleGenerativeAIProvider):
+            self.provider.set_context_caching(self.settings["context_caching"])
         self.save_settings_to_config()
         logger.info(f"Updated settings: {self.settings}")
 
@@ -117,7 +120,7 @@ class AIProofreader:
             return self._proofread_split_chunk(chinese_text, sino_vietnamese_text, names, filename)
 
     def _proofread_split_chunk(self, chinese_text: str, sino_vietnamese_text: str, names: List[str], filename: str) -> str:
-        result = self._proofread_recursive(chinese_text, sino_vietnamese_text, names, filename, 3)
+        result = self._proofread_recursive(chinese_text, sino_vietnamese_text, names, filename, 4)
         if result:  # Check if the result is not empty
             logger.info(f"Caching result for original chunk")
             self.cache.cache_result(filename, chinese_text, sino_vietnamese_text, names, result)
@@ -242,7 +245,11 @@ class AIProofreader:
                 # Update context cache with the new translated text
                 if self.settings["context_caching"] and isinstance(self.provider, GoogleGenerativeAIProvider):
                     logger.info("Updating context cache with new translated text")
-                    self.provider.update_context_cache(result)
+                    try:
+                        self.provider.update_context_cache(result)
+                    except Exception as e:
+                        logger.error(f"Error updating context cache: {str(e)}")
+                        # Continue with the process even if context caching fails
                 
                 return result
             

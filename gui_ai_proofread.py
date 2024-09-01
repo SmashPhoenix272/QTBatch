@@ -7,8 +7,8 @@ class AIProofreadSettingsGUI:
         self.update_settings_callback = update_settings_callback
         self.settings = self.main_gui.ai_proofreader.settings.copy()  # Create a copy of the settings
         self.providers = ["Google GenerativeAI", "Vertex AI"]
-        self.gemini_models = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"]
-        self.vertex_models = ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"]  # Add Vertex AI models here
+        self.gemini_models = ["gemini-1.5-pro-001", "gemini-1.5-flash-001", "gemini-1.0-pro"]
+        self.vertex_models = ["gemini-1.5-pro-001", "gemini-1.5-flash-001", "gemini-1.0-pro"]  # Add Vertex AI models here
         self.settings["provider"] = "Google GenerativeAI"  # Default provider
 
     def create_settings_window(self):
