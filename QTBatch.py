@@ -352,7 +352,10 @@ class QuickTranslatorGUI:
                     converted_count += 1
                     conversion_progress = converted_count / total_chunks
                     proofreading_progress = proofread_count / total_chunks
-                    message = f"Converted: {converted_count}/{total_chunks}, Proofread: {proofread_count}/{total_chunks}"
+                    if self.gui.ai_proofread_enabled:
+                        message = f"Converted: {converted_count}/{total_chunks}, Proofread: {proofread_count}/{total_chunks}"
+                    else:
+                        message = f"Converted: {converted_count}/{total_chunks}"
                     self.gui_update_queue.put(lambda: update_progress_and_status(conversion_progress, proofreading_progress, message))
 
                     if self.gui.ai_proofread_enabled:
@@ -386,7 +389,10 @@ class QuickTranslatorGUI:
                         proofread_count += 1
 
                     proofreading_progress = proofread_count / total_chunks
-                    message = f"Converted: {converted_count}/{total_chunks}, Proofread: {proofread_count}/{total_chunks}"
+                    if self.gui.ai_proofread_enabled:
+                        message = f"Converted: {converted_count}/{total_chunks}, Proofread: {proofread_count}/{total_chunks}"
+                    else:
+                        message = f"Converted: {converted_count}/{total_chunks}"
                     self.gui_update_queue.put(lambda: update_progress_and_status(conversion_progress, proofreading_progress, message))
 
             if not self.stop_conversion:
