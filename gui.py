@@ -610,11 +610,11 @@ class GUI:
         if self.conversion_paused:
             self.resume_conversion_callback()
             self.conversion_paused = False
-            dpg.configure_item("pause_resume_conversion_button", label="Pause Conversion")
+            dpg.configure_item("pause_resume_conversion_button", label="Pause CV")
         else:
             self.pause_conversion_callback()
             self.conversion_paused = True
-            dpg.configure_item("pause_resume_conversion_button", label="Resume Conversion")
+            dpg.configure_item("pause_resume_conversion_button", label="Resume CV")
 
     def update_max_workers(self, sender, app_data):
         self.max_workers = app_data
