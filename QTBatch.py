@@ -281,15 +281,22 @@ class QuickTranslatorGUI:
         print(f"Running conversion (detect_chapters_enabled={detect_chapters_enabled}, apply_to_conversion={apply_to_conversion}, chapter_range_applied={chapter_range_applied}, start_chapter={start_chapter}, end_chapter={end_chapter}, export_filename={export_filename})...")
         start_time = time.time()
         try:
+            self.gui_update_queue.put(("status", "Preprocessing text..."))
             chunks, futures = split_text_into_chunks(text_to_convert, self.names2, self.names, self.viet_phrase, self.chinese_phien_am)
             total_chunks = len(chunks)
             converted_chunks = OrderedDict()
+            self.gui_update_queue.put(("status", f"Preprocessing complete. Total chunks: {total_chunks}"))
+
+            last_update_time = time.time()
+            update_interval = 0.1  # Update GUI every 0.1 seconds
 
             def update_progress_and_status(conversion_progress, proofreading_progress, message):
-                self.gui_update_queue.put(lambda: dpg.set_value("conversion_progress", conversion_progress))
-                self.gui_update_queue.put(lambda: dpg.does_item_exist("proofreading_progress") and dpg.set_value("proofreading_progress", proofreading_progress))
-                self.gui_update_queue.put(lambda: dpg.set_value("conversion_status", message))
-                logging.info(message)
+                nonlocal last_update_time
+                current_time = time.time()
+                if current_time - last_update_time >= update_interval:
+                    elapsed_time = current_time - start_time
+                    self.gui_update_queue.put((conversion_progress, proofreading_progress, message, elapsed_time))
+                    last_update_time = current_time
 
             def estimate_time_remaining(elapsed_time, progress):
                 if progress > 0:
@@ -307,7 +314,7 @@ class QuickTranslatorGUI:
                 elapsed_time = time.time() - start_time
                 time_remaining = estimate_time_remaining(elapsed_time, overall_progress)
                 message = f"Converting chunk {chunk_index + 1}/{total_chunks} - {chunk_progress:.1%} complete. Estimated time remaining: {time_remaining:.1f} seconds"
-                self.gui_update_queue.put(lambda: update_progress_and_status(overall_progress, 0, message))
+                update_progress_and_status(overall_progress, 0, message)
                 return False  # Continue the conversion
 
             def convert_chunk(chunk_index, chunk):
@@ -327,7 +334,7 @@ class QuickTranslatorGUI:
                     return chunk_index, converted_chunk
                 except Exception as e:
                     logging.error(f"Error converting chunk {chunk_index}: {str(e)}")
-                    self.gui_update_queue.put(lambda: self.gui.add_log_message(f"Error converting chunk {chunk_index}: {str(e)}"))
+                    self.gui_update_queue.put(("log", f"Error converting chunk {chunk_index}: {str(e)}"))
                     return chunk_index, None  # Return None to indicate error
 
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -338,17 +345,14 @@ class QuickTranslatorGUI:
             with open(output_path, 'w', encoding='utf-8') as f:
                 converted_count = 0
                 proofread_count = 0
-
                 for chunk_index, future in futures.items():
                     if self.stop_conversion:
                         break
-
                     chunk_index, converted_chunk = future.result()
                     if converted_chunk is None:
                         # Handle error in chunk conversion
-                        self.gui_update_queue.put(lambda: self.gui.add_log_message(f"Skipping chunk {chunk_index} due to conversion error"))
+                        self.gui_update_queue.put(("log", f"Skipping chunk {chunk_index} due to conversion error"))
                         continue
-
                     converted_count += 1
                     conversion_progress = converted_count / total_chunks
                     proofreading_progress = proofread_count / total_chunks
@@ -356,32 +360,19 @@ class QuickTranslatorGUI:
                         message = f"Converted: {converted_count}/{total_chunks}, Proofread: {proofread_count}/{total_chunks}"
                     else:
                         message = f"Converted: {converted_count}/{total_chunks}"
-                    self.gui_update_queue.put(lambda: update_progress_and_status(conversion_progress, proofreading_progress, message))
+                    update_progress_and_status(conversion_progress, proofreading_progress, message)
 
                     if self.gui.ai_proofread_enabled:
                         try:
-                            self.gui_update_queue.put(lambda: self.gui.update_status_bar(f"AI Proofreading chunk {chunk_index + 1}/{total_chunks}..."))
+                            self.gui_update_queue.put(("status_bar", f"AI Proofreading chunk {chunk_index + 1}/{total_chunks}..."))
                             names = load_names_from_file('Names2.txt')
-                            
-                            # Check if the chunk is in the cache
-                            cache_key = self.ai_proofreader.cache.get_cache_key(chunks[chunk_index], converted_chunk, names)
-                            cached_result = self.ai_proofreader.cache.get_cached_result(os.path.basename(self.novel_path), chunks[chunk_index], converted_chunk, names)
-                            
-                            if cached_result:
-                                logging.info(f"Using cached result for chunk {chunk_index + 1}")
-                                proofread_chunk = cached_result
-                            else:
-                                logging.info(f"Proofreading chunk {chunk_index + 1}")
-                                proofread_chunk = self.ai_proofreader.proofread_chunk(chunks[chunk_index], converted_chunk, names, os.path.basename(self.novel_path))
-                            
+                            proofread_chunk = self.ai_proofreader.proofread_chunk(chunks[chunk_index], converted_chunk, names, os.path.basename(self.novel_path))
                             f.write(proofread_chunk)
                             proofread_count += 1
-                            
-                            # Update cache percentage
                             self.update_ai_proofread_cache_percentage()
                         except Exception as e:
                             logging.error(f"Error during AI proofreading: {str(e)}")
-                            self.gui_update_queue.put(lambda: self.gui.add_log_message(f"Error during AI proofreading: {str(e)}"))
+                            self.gui_update_queue.put(("log", f"Error during AI proofreading: {str(e)}"))
                             f.write(converted_chunk)  # Use the non-proofread chunk in case of error
                             proofread_count += 1
                     else:
@@ -393,38 +384,44 @@ class QuickTranslatorGUI:
                         message = f"Converted: {converted_count}/{total_chunks}, Proofread: {proofread_count}/{total_chunks}"
                     else:
                         message = f"Converted: {converted_count}/{total_chunks}"
-                    self.gui_update_queue.put(lambda: update_progress_and_status(conversion_progress, proofreading_progress, message))
+                    update_progress_and_status(conversion_progress, proofreading_progress, message)
 
-            if not self.stop_conversion:
-                end_time = time.time()
-                conversion_time = end_time - start_time
-
-                if detect_chapters_enabled and apply_to_conversion and chapter_range_applied:
-                    status_message = f"Complete. Converted chapters {start_chapter}-{end_chapter}."
+                if not self.stop_conversion:
+                    end_time = time.time()
+                    conversion_time = end_time - start_time
+                    if detect_chapters_enabled and apply_to_conversion and chapter_range_applied:
+                        status_message = f"Complete. Converted chapters {start_chapter}-{end_chapter}."
+                    else:
+                        status_message = "Complete. Converted entire novel."
+                    final_message = f"{status_message} Saved as {os.path.basename(output_path)}. Total time: {conversion_time:.2f} seconds"
+                    update_progress_and_status(1.0, 1.0, final_message)
+                    print(f"Conversion completed. Saved as {os.path.basename(output_path)}")
+                    
                 else:
-                    status_message = "Complete. Converted entire novel."
-                
-                final_message = f"{status_message} Saved as {os.path.basename(output_path)}. Total time: {conversion_time:.2f} seconds"
-                self.gui_update_queue.put(lambda: update_progress_and_status(1.0, 1.0, final_message))
-                print(f"Conversion completed. Saved as {os.path.basename(output_path)}")
-            else:
-                self.gui_update_queue.put(lambda: update_progress_and_status(converted_count / total_chunks, proofread_count / total_chunks, "Conversion stopped"))
-                print("Conversion stopped")
+                    update_progress_and_status(converted_count / total_chunks, proofread_count / total_chunks, "Conversion stopped")
+                    print("Conversion stopped")
 
-            # Update AI Proofread stats
-            if self.gui.ai_proofread_enabled:
-                stats = self.ai_proofreader.get_stats()
-                self.gui_update_queue.put(lambda: self.gui.update_ai_proofread_stats(stats['total_tokens'], stats['total_cost']))
+                # Update AI Proofread stats
+                if self.gui.ai_proofread_enabled:
+                    stats = self.ai_proofreader.get_stats()
+                    self.gui_update_queue.put(("ai_proofread_stats", stats['total_tokens'], stats['total_cost']))
 
         except Exception as e:
             logging.error(f"Error during conversion: {str(e)}")
-            self.gui_update_queue.put(lambda: self.gui.update_conversion_status(f"Error - {str(e)}"))
-            self.gui_update_queue.put(lambda: self.gui.add_log_message(f"Error during conversion: {str(e)}"))
+            self.gui_update_queue.put(("conversion_status", f"Error - {str(e)}"))
+            self.gui_update_queue.put(("log", f"Error during conversion: {str(e)}"))
             print(f"Error during conversion: {str(e)}")
         finally:
+            # Process any remaining GUI updates
+            self.process_gui_updates()
+            
             self.conversion_running = False
             self.paused = False
             
+            # Ensure the final status is updated in the GUI
+            self.gui_update_queue.put((1.0, 1.0, "Conversion completed", time.time() - start_time))
+            self.process_gui_updates()
+
     def start_hanlp_analysis(self):
         print("Starting HanLP analysis...")
         if not self.hanlp_analyzer:
@@ -643,16 +640,27 @@ class QuickTranslatorGUI:
         print(f"Max parallel processing threads set to {self.max_workers}")
 
     def process_gui_updates(self):
-        try:
-            while True:
-                update_func = self.gui_update_queue.get_nowait()
-                if callable(update_func):
-                    try:
-                        update_func()
-                    except Exception as e:
-                        logger.error(f"Error in GUI update function: {str(e)}")
-        except queue.Empty:
-            pass
+        while True:
+            try:
+                update = self.gui_update_queue.get_nowait()
+                if isinstance(update, tuple):
+                    if len(update) == 4:
+                        conversion_progress, proofreading_progress, message, elapsed_time = update
+                        self.gui.update_conversion_progress(conversion_progress)
+                        self.gui.update_conversion_percent(conversion_progress)
+                        self.gui.update_conversion_status(message, ai_proofread_enabled=self.gui.ai_proofread_enabled)
+                        self.gui.update_conversion_time(elapsed_time)
+                    elif update[0] == "log":
+                        self.gui.add_log_message(update[1])
+                    elif update[0] == "status_bar":
+                        self.gui.update_status_bar(update[1])
+                    elif update[0] == "ai_proofread_stats":
+                        self.gui.update_ai_proofread_stats(update[1], update[2])
+                    elif update[0] == "conversion_status":
+                        self.gui.update_conversion_status(update[1])
+            except queue.Empty:
+                break
+            dpg.render_dearpygui_frame()
 
     def run(self):
         print("Running QuickTranslatorGUI...")
@@ -663,9 +671,8 @@ class QuickTranslatorGUI:
         dpg.set_primary_window("main_window", True)
         
         while dpg.is_dearpygui_running():
-            self.process_gui_updates()
+            self.process_gui_updates()  # Add this line
             dpg.render_dearpygui_frame()
-        
         dpg.destroy_context()
 
 if __name__ == "__main__":

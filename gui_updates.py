@@ -133,3 +133,10 @@ class GUIUpdater:
         dpg.set_value("proofreading_progress", progress)
         dpg.set_value("proofreading_percentage", f"{percentage:.2f}%")
         self.update_status_bar(f"Proofreading progress: {percentage:.2f}%")
+
+    def update_progress_and_status(self, conversion_progress: float, proofreading_progress: float, message: str):
+        self.update_conversion_progress(conversion_progress)
+        if dpg.does_item_exist("proofreading_progress"):
+            self.update_proofreading_progress(proofreading_progress)
+        self.update_conversion_status(message)
+        logging.info(message)
