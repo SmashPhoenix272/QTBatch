@@ -85,33 +85,35 @@ def load_data() -> Tuple[Trie, Trie, Trie, Dict[str, str], Dict[str, Dict[str, A
         "viet_phrase": {"loaded": False, "count": 0, "time": 0}
     }
 
-    def load_file(file_name: str, trie: Trie, info_key: str, is_vietphrase: bool = False):
+    def load_file(file_name: str, trie: Trie, info_key: str, split_values: bool = False):
         try:
             start_time = time.time()
             with open(file_name, 'r', encoding='utf-8') as f:
-                if is_vietphrase:
-                    entries = []
-                    for line in f:
-                        parts = line.strip().split('=')
-                        if len(parts) == 2:
-                            key, value = parts
-                            first_value = value.split('/')[0]
+                entries = []
+                for line in f:
+                    parts = line.strip().split('=')
+                    if len(parts) == 2:
+                        key, value = parts
+                        if split_values:
+                            first_value = value.replace("|", "/").split("/")[0]
                             entries.append((key, first_value))
-                else:
-                    entries = [tuple(line.strip().split('=')) for line in f if len(line.strip().split('=')) == 2]
+                        else:
+                            entries.append((key, value))
             trie.batch_insert(entries)
             loading_info[info_key]["loaded"] = True
             loading_info[info_key]["count"] = trie.count()
             loading_info[info_key]["time"] = time.time() - start_time
             logging.info(f"Loaded {trie.count()} entries from {file_name} in {loading_info[info_key]['time']:.2f} seconds")
         except FileNotFoundError:
-            logging.warning(f"{file_name} not found. Proceeding without {info_key} data.")
+            logging.error(f"{file_name} not found. Proceeding without {info_key} data.")
+        except Exception as e:
+            logging.error(f"Error loading {file_name}: {str(e)}")
 
     # Load Names2.txt
     load_file('Names2.txt', names2, "names2")
 
-    # Load Names.txt
-    load_file('Names.txt', names, "names")
+    # Load Names.txt with split_values=True
+    load_file('Names.txt', names, "names", split_values=True)
 
     # Load ChinesePhienAmWords.txt
     try:
@@ -123,10 +125,12 @@ def load_data() -> Tuple[Trie, Trie, Trie, Dict[str, str], Dict[str, Dict[str, A
         loading_info["chinese_words"]["time"] = time.time() - start_time
         logging.info(f"Loaded {len(chinese_phien_am)} Chinese words in {loading_info['chinese_words']['time']:.2f} seconds")
     except FileNotFoundError:
-        logging.warning("ChinesePhienAmWords.txt not found.")
+        logging.error("ChinesePhienAmWords.txt not found.")
+    except Exception as e:
+        logging.error(f"Error loading ChinesePhienAmWords.txt: {str(e)}")
 
-    # Load VietPhrase.txt
-    load_file('VietPhrase.txt', viet_phrase, "viet_phrase", is_vietphrase=True)
+    # Load VietPhrase.txt with split_values=True
+    load_file('VietPhrase.txt', viet_phrase, "viet_phrase", split_values=True)
 
     return names2, names, viet_phrase, chinese_phien_am, loading_info
 
